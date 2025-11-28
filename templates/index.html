@@ -1,12 +1,30 @@
 <!DOCTYPE html>
-<html lang="ja">
+<html>
 <head>
-  <meta charset="UTF-8" />
-  <title>VC Dashboard</title>
+    <meta charset="utf-8">
+    <title>VC Dashboard</title>
+    <script src="/static/dashboard.js"></script>
 </head>
 <body>
-  <h1>VC Dashboard</h1>
+    <h1>VC Dashboard</h1>
 
+    <!-- 未ログインの場合 -->
+    <div id="login-box" style="display:none;">
+        <a href="/login">
+            <button>Discord でログイン</button>
+        </a>
+    </div>
+
+    <!-- ログイン後 -->
+    <div id="user-box" style="display:none;">
+        <img id="user-avatar" width="64" height="64">
+        <p>ユーザー名：<span id="user-name"></span></p>
+        <p>ID：<span id="user-id"></span></p>
+
+        <a href="/logout">
+            <button>ログアウト</button>
+        </a>
+    </div>
   <h2>ギルド一覧</h2>
   <ul>
     {% for g in guilds %}
@@ -18,4 +36,3 @@
   </ul>
 </body>
 </html>
-ß

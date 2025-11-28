@@ -5,49 +5,46 @@ from discord.ext import commands
 import settings
 
 
-class Presence(commands.Cog):
+class PresenceCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
 
-    async def update_vc_status(self, guild: discord.Guild):
-        count = 0
-        for ch in guild.voice_channels:
-            if ch.category and ch.category.id == settings.VC_CATEGORY_ID:
-                count += len(ch.members)
-
-        if count == 0:
-            activity = discord.Game(name="通話はされていません。")
-        else:
-            activity = discord.Game(name=f"{count}人が通話中！")
-
-        await self.bot.change_presence(status=discord.Status.online, activity=activity)
-
-    @commands.Cog.listener()
-    async def on_ready(self):
-        # Bot 起動時に一度ステータス更新＋ダッシュボード更新
+    async def update_presence(self):
+        # VCカテゴリ内の合計人数をカウント
+        total_members = 0
         for g in self.bot.guilds:
-            await self.update_vc_status(g)
+            for ch in g.voice_channels:
+                if ch.category and ch.category.id == settings.VC_CATEGORY_ID:
+                    total_members += len(ch.members)
+
+        if total_members == 0:
+            activity = discord.Game("通話はされていません。")
+        else:
+            activity = discord.Game(f"{total_members}人が通話中！")
+
+        await self.bot.change_presence(activity=activity)
+
+        # ダッシュボードへVC状況をブロードキャスト
         if hasattr(self.bot, "dashboard"):
             try:
-                await self.bot.dashboard.broadcast_vc_update(self.bot)
+                await self.bot.dashboard.broadcast_vc_update()
             except Exception as e:
                 print(f"[Dashboard broadcast error on_ready] {e}")
 
     @commands.Cog.listener()
-    async def on_voice_state_update(self, member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
-        if not member.guild:
+    async def on_ready(self):
+        await self.update_presence()
+
+    @commands.Cog.listener()
+    async def on_voice_state_update(self, member, before, after):
+        if member.bot:
+            return
+        # ミュート切り替えなどは無視したければ同様に条件追加
+        if before.channel == after.channel:
             return
 
-        # ステータス更新
-        await self.update_vc_status(member.guild)
-
-        # ダッシュボード更新
-        if hasattr(self.bot, "dashboard"):
-            try:
-                await self.bot.dashboard.broadcast_vc_update(self.bot)
-            except Exception as e:
-                print(f"[Dashboard broadcast error] {e}")
+        await self.update_presence()
 
 
 def setup(bot):
-    bot.add_cog(Presence(bot))
+    bot.add_cog(PresenceCog(bot))
