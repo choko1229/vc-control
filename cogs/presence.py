@@ -1,15 +1,15 @@
+# cogs/presence.py
+
 import discord
 from discord.ext import commands
 import settings
 
 
 class Presence(commands.Cog):
-    """VC人数に応じてBOTステータスを更新"""
-
-    def __init__(self, bot: commands.Bot):
+    def __init__(self, bot):
         self.bot = bot
 
-    async def update_status(self, guild: discord.Guild):
+    async def update_vc_status(self, guild: discord.Guild):
         count = 0
         for ch in guild.voice_channels:
             if ch.category and ch.category.id == settings.VC_CATEGORY_ID:
@@ -24,15 +24,30 @@ class Presence(commands.Cog):
 
     @commands.Cog.listener()
     async def on_ready(self):
+        # Bot 起動時に一度ステータス更新＋ダッシュボード更新
         for g in self.bot.guilds:
-            await self.update_status(g)
+            await self.update_vc_status(g)
+        if hasattr(self.bot, "dashboard"):
+            try:
+                await self.bot.dashboard.broadcast_vc_update(self.bot)
+            except Exception as e:
+                print(f"[Dashboard broadcast error on_ready] {e}")
 
     @commands.Cog.listener()
-    async def on_voice_state_update(self, member: discord.Member, before, after):
+    async def on_voice_state_update(self, member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
         if not member.guild:
             return
-        await self.update_status(member.guild)
+
+        # ステータス更新
+        await self.update_vc_status(member.guild)
+
+        # ダッシュボード更新
+        if hasattr(self.bot, "dashboard"):
+            try:
+                await self.bot.dashboard.broadcast_vc_update(self.bot)
+            except Exception as e:
+                print(f"[Dashboard broadcast error] {e}")
 
 
-def setup(bot: commands.Bot):
+def setup(bot):
     bot.add_cog(Presence(bot))

@@ -9,19 +9,21 @@
   <a href="/">← 戻る</a>
 
   <h2>現在のVC一覧</h2>
-  <ul>
-    {% for vc in vc_list %}
-      <li>
-        <strong>{{ vc.name }}</strong><br />
-        参加者:
-        {% if vc.members %}
-          {{ ", ".join(vc.members) }}
-        {% else %}
-          誰もいません
-        {% endif %}
-      </li>
-    {% endfor %}
-  </ul>
+  <div id="vc-list">
+    <ul>
+      {% for vc in vc_list %}
+        <li>
+          <strong>{{ vc.name }}</strong><br />
+          参加者:
+          {% if vc.members %}
+            {{ ", ".join(vc.members) }}
+          {% else %}
+            誰もいません
+          {% endif %}
+        </li>
+      {% endfor %}
+    </ul>
+  </div>
 
   <hr>
 
@@ -64,5 +66,51 @@
   {% else %}
     <p>まだ履歴はありません。</p>
   {% endif %}
+
+  <script>
+    // WebSocket で VC 状況をリアルタイム更新
+    (function() {
+      const guildId = {{ guild.id }};
+      const vcListDiv = document.getElementById("vc-list");
+
+      const protocol = (location.protocol === "https:") ? "wss://" : "ws://";
+      const wsUrl = protocol + location.host + "/ws";
+      const ws = new WebSocket(wsUrl);
+
+      ws.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          if (data.type !== "vc_update") return;
+
+          const guilds = data.guilds || [];
+          const g = guilds.find(x => x.id === guildId);
+          if (!g) return;
+
+          const htmlParts = [];
+          htmlParts.push("<ul>");
+          for (const vc of g.vcs) {
+            const members = (vc.members && vc.members.length)
+              ? vc.members.join(", ")
+              : "誰もいません";
+            htmlParts.push(
+              `<li><strong>${vc.name}</strong><br>参加者: ${members}</li>`
+            );
+          }
+          htmlParts.push("</ul>");
+          vcListDiv.innerHTML = htmlParts.join("");
+        } catch (e) {
+          console.error("WebSocket message parse error:", e);
+        }
+      };
+
+      ws.onopen = () => {
+        console.log("WebSocket connected");
+      };
+
+      ws.onclose = () => {
+        console.log("WebSocket closed");
+      };
+    })();
+  </script>
 </body>
 </html>

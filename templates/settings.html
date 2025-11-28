@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <title>Bot設定</title>
+</head>
+<body>
+  <h1>Bot 設定</h1>
+  <a href="/">← Dashboard</a>
+  <hr>
+
+  <form method="POST" action="/settings">
+    <label>BASE_VC_ID：</label><br>
+    <input type="number" name="BASE_VC_ID" value="{{ settings.BASE_VC_ID }}"><br><br>
+
+    <label>VC_CATEGORY_ID：</label><br>
+    <input type="number" name="VC_CATEGORY_ID" value="{{ settings.VC_CATEGORY_ID }}"><br><br>
+
+    <label>NOTICE_CHANNEL_ID：</label><br>
+    <input type="number" name="NOTICE_CHANNEL_ID" value="{{ settings.NOTICE_CHANNEL_ID }}"><br><br>
+
+    <label>FIRST_EMPTY_NOTICE_SEC：</label><br>
+    <input type="number" name="FIRST_EMPTY_NOTICE_SEC" value="{{ settings.FIRST_EMPTY_NOTICE_SEC }}"><br><br>
+
+    <label>FINAL_DELETE_SEC：</label><br>
+    <input type="number" name="FINAL_DELETE_SEC" value="{{ settings.FINAL_DELETE_SEC }}"><br><br>
+
+    <button type="submit">保存</button>
+  </form>
+</body>
+</html>

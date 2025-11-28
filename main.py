@@ -6,7 +6,7 @@ from discord.ext import commands
 import uvicorn
 
 import settings
-from dashboard_app import create_app
+from dashboard_app import create_app, DashboardState
 
 
 # ─────────────────────────────────────
@@ -21,14 +21,16 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 
 
 # ─────────────────────────────────────
-# Cog のロード（同期で行う）
+# Cog のロード（同期）
 # ─────────────────────────────────────
 def load_cogs_sync():
+    print("[INFO] Loading Cogs...")
     bot.load_extension("cogs.presence")
     bot.load_extension("cogs.vc_manager")
     bot.load_extension("cogs.vc_notice")
     bot.load_extension("cogs.dm_forward")
     bot.load_extension("cogs.cleaner")
+    print("[INFO] Cogs Loaded Successfully.")
 
 
 # ─────────────────────────────────────
@@ -41,8 +43,11 @@ async def start_bot():
 # ─────────────────────────────────────
 # FastAPI ダッシュボード起動
 # ─────────────────────────────────────
-async def start_dashboard():
-    app = create_app(bot)
+async def start_dashboard(dashboard_state: DashboardState):
+    """
+    FastAPI + Uvicorn を Discord Bot と同じイベントループで動かす。
+    """
+    app = create_app(bot, dashboard_state)
 
     config = uvicorn.Config(
         app,
@@ -58,12 +63,17 @@ async def start_dashboard():
 # BotとWebサーバーを同時起動
 # ─────────────────────────────────────
 async def main_async():
-    # ★ bot.start() の前に必ず Cog をロードする ★
+    # ★ Cog ロード
     load_cogs_sync()
+
+    # ★ ダッシュボード用状態オブジェクトを作成
+    dashboard_state = DashboardState()
+    # Cogs から self.bot.dashboard.broadcast_vc_update(...) で叩けるようにする
+    bot.dashboard = dashboard_state
 
     await asyncio.gather(
         start_bot(),
-        start_dashboard()
+        start_dashboard(dashboard_state)
     )
 
 
