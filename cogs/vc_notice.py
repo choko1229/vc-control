@@ -2,102 +2,150 @@ import discord
 from discord.ext import commands
 import settings
 from utils.embed_utils import embed_notice_start, embed_notice_end
+from utils import db_utils
 
 
 class VCNotice(commands.Cog):
-    def __init__(self, bot):
-        self.bot = bot
-        self.sessions = {}  # vc_id → session情報
+    """
+    VC開始/終了のサマリ通知＋履歴保存（BASE VC は対象外）
+    """
 
-    def ensure_session(self, vc, member, now):
+    def __init__(self, bot: commands.Bot):
+        self.bot = bot
+        # vc_id → セッション情報
+        self.sessions = {}
+
+    def ensure_session(self, vc: discord.VoiceChannel, member: discord.Member, now):
         if vc.id not in self.sessions:
             self.sessions[vc.id] = {
                 "start": now,
                 "starter_id": member.id,
                 "notice_msg_id": None,
-                "participants": {}
+                "participants": {},
             }
         return self.sessions[vc.id]
 
-    def leave_session(self, vc_id, member, now):
+    def member_join(self, vc_id: int, member: discord.Member, now):
         sess = self.sessions.get(vc_id)
         if not sess:
             return
+
         parts = sess["participants"].get(member.id)
-        if parts and parts["joined_at"]:
-            sec = int((now - parts["joined_at"]).total_seconds())
-            parts["total_sec"] += sec
+        if parts is None:
+            parts = {
+                "name": member.display_name,
+                "total_sec": 0,
+                "joined_at": now,
+            }
+            sess["participants"][member.id] = parts
+        else:
+            parts["name"] = member.display_name
+            if parts.get("joined_at") is None:
+                parts["joined_at"] = now
+
+    def member_leave(self, vc_id: int, member: discord.Member, now):
+        sess = self.sessions.get(vc_id)
+        if not sess:
+            return
+
+        parts = sess["participants"].get(member.id)
+        if not parts:
+            return
+
+        joined_at = parts.get("joined_at")
+        if joined_at:
+            sec = int((now - joined_at).total_seconds())
+            parts["total_sec"] = int(parts.get("total_sec", 0)) + sec
             parts["joined_at"] = None
+        parts["name"] = member.display_name
 
     @commands.Cog.listener()
-    async def on_voice_state_update(self, member, before, after):
+    async def on_voice_state_update(
+        self, member: discord.Member, before: discord.VoiceState, after: discord.VoiceState
+    ):
         if member.bot:
             return
 
         now = discord.utils.utcnow()
 
-        # 入室
-        if after.channel and after.channel.category and after.channel.category.id == settings.VC_CATEGORY_ID:
+        # ===== 入室 side（BASE VC 除外） =====
+        if (
+            after.channel
+            and after.channel.id != settings.BASE_VC_ID
+            and after.channel.category
+            and after.channel.category.id == settings.VC_CATEGORY_ID
+        ):
             vc = after.channel
 
-            # セッション開始
             if len(vc.members) == 1:
+                # セッション開始
                 sess = self.ensure_session(vc, member, now)
-                # 開始通知
+                self.member_join(vc.id, member, now)
+
                 notice_ch = member.guild.get_channel(settings.NOTICE_CHANNEL_ID)
                 if notice_ch:
                     msg = await notice_ch.send(embed=embed_notice_start(member, now))
                     sess["notice_msg_id"] = msg.id
-                sess["participants"][member.id] = {
-                    "name": member.display_name,
-                    "total_sec": 0,
-                    "joined_at": now
-                }
             else:
-                # 参加者追加
-                sess = self.sessions.get(vc.id)
-                if sess:
-                    sess["participants"][member.id] = {
-                        "name": member.display_name,
-                        "total_sec": 0,
-                        "joined_at": now
-                    }
+                if vc.id in self.sessions:
+                    self.member_join(vc.id, member, now)
 
-        # 退室
-        if before.channel and before.channel.category and before.channel.category.id == settings.VC_CATEGORY_ID:
+        # ===== 退室 side（BASE VC 除外） =====
+        if (
+            before.channel
+            and before.channel.id != settings.BASE_VC_ID
+            and before.channel.category
+            and before.channel.category.id == settings.VC_CATEGORY_ID
+        ):
             vc = before.channel
-            if vc.id not in self.sessions:
-                return
 
-            # 退室処理
-            sess = self.sessions[vc.id]
-            parts = sess["participants"].get(member.id)
-            if parts and parts["joined_at"]:
-                sec = int((now - parts["joined_at"]).total_seconds())
-                parts["total_sec"] += sec
-                parts["joined_at"] = None
+            if vc.id in self.sessions:
+                self.member_leave(vc.id, member, now)
 
-            # 無人 → セッション終了
-            if len(vc.members) == 0:
-                started = sess["start"]
+            # 無人になったらセッション終了
+            if len(vc.members) == 0 and vc.id in self.sessions:
+                sess = self.sessions.pop(vc.id)
+                started_at = sess["start"]
+                ended_at = now
+                participants = sess["participants"]
+
                 notice_ch = member.guild.get_channel(settings.NOTICE_CHANNEL_ID)
 
                 # 開始Embed削除
-                if notice_ch and sess["notice_msg_id"]:
+                if notice_ch and sess.get("notice_msg_id"):
                     try:
                         msg = await notice_ch.fetch_message(sess["notice_msg_id"])
                         await msg.delete()
-                    except:
+                    except Exception:
                         pass
 
-                # 終了通知
+                # 終了Embed送信
                 if notice_ch:
-                    await notice_ch.send(
-                        embed=embed_notice_end(vc.name, started, now, sess["participants"])
+                    try:
+                        await notice_ch.send(
+                            embed=embed_notice_end(
+                                vc.name,
+                                started_at,
+                                ended_at,
+                                participants,
+                            )
+                        )
+                    except Exception as e:
+                        print(f"[終了通知送信失敗] {e}")
+
+                # 履歴をDBに保存
+                try:
+                    db_utils.insert_session(
+                        guild_id=member.guild.id,
+                        vc_id=vc.id,
+                        vc_name=vc.name,
+                        started_at=started_at,
+                        ended_at=ended_at,
+                        participants=participants,
                     )
+                except Exception as e:
+                    print(f"[DB保存失敗] {e}")
 
-                self.sessions.pop(vc.id, None)
 
-
-async def setup(bot):
-    await bot.add_cog(VCNotice(bot))
+def setup(bot: commands.Bot):
+    bot.add_cog(VCNotice(bot))

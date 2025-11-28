@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <title>VC Dashboard</title>
+</head>
+<body>
+  <h1>VC Dashboard</h1>
+
+  <h2>ギルド一覧</h2>
+  <ul>
+    {% for g in guilds %}
+      <li>
+        <a href="/guild/{{ g.id }}">{{ g.name }}</a>
+        （通話中: {{ g.vc_count }}人）
+      </li>
+    {% endfor %}
+  </ul>
+</body>
+</html>
+ß

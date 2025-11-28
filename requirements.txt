@@ -1,2 +1,10 @@
-discord.py>=2.3.0
-PyNaCl
+# Discord Bot
+py-cord==2.5.0  # または discord.py / あなたの環境に合わせて
+
+# Web ダッシュボード
+fastapi==0.115.0
+uvicorn[standard]==0.30.0
+jinja2==3.1.4
+
+# OAuth2（後で使えるように入れておく）
+authlib==1.3.1

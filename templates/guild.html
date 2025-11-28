@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <title>{{ guild.name }} - VC詳細</title>
+</head>
+<body>
+  <h1>{{ guild.name }} のVC状況</h1>
+  <a href="/">← 戻る</a>
+
+  <h2>現在のVC一覧</h2>
+  <ul>
+    {% for vc in vc_list %}
+      <li>
+        <strong>{{ vc.name }}</strong><br />
+        参加者:
+        {% if vc.members %}
+          {{ ", ".join(vc.members) }}
+        {% else %}
+          誰もいません
+        {% endif %}
+      </li>
+    {% endfor %}
+  </ul>
+
+  <hr>
+
+  <h2>最近のVC履歴（最大50件）</h2>
+  {% if sessions %}
+    <table border="1" cellpadding="4">
+      <thead>
+        <tr>
+          <th>ID</th>
+          <th>VC名</th>
+          <th>開始時刻</th>
+          <th>終了時刻</th>
+          <th>継続時間(秒)</th>
+          <th>参加ユーザー</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for s in sessions %}
+          <tr>
+            <td>{{ s.id }}</td>
+            <td>{{ s.vc_name }}</td>
+            <td>{{ s.started_at }}</td>
+            <td>{{ s.ended_at }}</td>
+            <td>{{ s.duration_sec }}</td>
+            <td>
+              {% if s.participants %}
+                <ul>
+                  {% for uid, p in s.participants.items() %}
+                    <li>{{ p.name }}（{{ p.total_sec }}秒）</li>
+                  {% endfor %}
+                </ul>
+              {% else %}
+                -
+              {% endif %}
+            </td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% else %}
+    <p>まだ履歴はありません。</p>
+  {% endif %}
+</body>
+</html>

@@ -4,7 +4,9 @@ import settings
 
 
 class Presence(commands.Cog):
-    def __init__(self, bot):
+    """VC人数に応じてBOTステータスを更新"""
+
+    def __init__(self, bot: commands.Bot):
         self.bot = bot
 
     async def update_status(self, guild: discord.Guild):
@@ -13,24 +15,24 @@ class Presence(commands.Cog):
             if ch.category and ch.category.id == settings.VC_CATEGORY_ID:
                 count += len(ch.members)
 
-        name = (
-            "通話はされていません。" if count == 0
-            else f"{count}人が通話中！"
-        )
+        if count == 0:
+            activity = discord.Game(name="通話はされていません。")
+        else:
+            activity = discord.Game(name=f"{count}人が通話中！")
 
-        await self.bot.change_presence(activity=discord.Game(name=name))
-
-    @commands.Cog.listener()
-    async def on_voice_state_update(self, member, before, after):
-        if not member.guild:
-            return
-        await self.update_status(member.guild)
+        await self.bot.change_presence(status=discord.Status.online, activity=activity)
 
     @commands.Cog.listener()
     async def on_ready(self):
         for g in self.bot.guilds:
             await self.update_status(g)
 
+    @commands.Cog.listener()
+    async def on_voice_state_update(self, member: discord.Member, before, after):
+        if not member.guild:
+            return
+        await self.update_status(member.guild)
 
-async def setup(bot):
-    await bot.add_cog(Presence(bot))
+
+def setup(bot: commands.Bot):
+    bot.add_cog(Presence(bot))

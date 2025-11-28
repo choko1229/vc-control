@@ -1,8 +1,17 @@
+# main.py
+
+import asyncio
 import discord
 from discord.ext import commands
-import asyncio
-import settings
+import uvicorn
 
+import settings
+from dashboard_app import create_app
+
+
+# ─────────────────────────────────────
+# Bot 初期化
+# ─────────────────────────────────────
 intents = discord.Intents.default()
 intents.guilds = True
 intents.voice_states = True
@@ -11,28 +20,61 @@ intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 
-async def load_cogs():
-    """Cog ロード"""
-    await bot.load_extension("cogs.presence")
-    await bot.load_extension("cogs.vc_manager")
-    await bot.load_extension("cogs.vc_notice")
-    await bot.load_extension("cogs.dm_forward")
-    await bot.load_extension("cogs.cleaner")
+# ─────────────────────────────────────
+# Cog のロード（同期で行う）
+# ─────────────────────────────────────
+def load_cogs_sync():
+    bot.load_extension("cogs.presence")
+    bot.load_extension("cogs.vc_manager")
+    bot.load_extension("cogs.vc_notice")
+    bot.load_extension("cogs.dm_forward")
+    bot.load_extension("cogs.cleaner")
 
 
-@bot.event
-async def on_ready():
-    print(f"Bot起動成功: {bot.user} (ID: {bot.user.id})")
-
-
+# ─────────────────────────────────────
+# Bot 起動
+# ─────────────────────────────────────
 async def start_bot():
-    async with bot:
-        await load_cogs()
-        await bot.start(settings.TOKEN)
+    await bot.start(settings.TOKEN)
 
 
+# ─────────────────────────────────────
+# FastAPI ダッシュボード起動
+# ─────────────────────────────────────
+async def start_dashboard():
+    app = create_app(bot)
+
+    config = uvicorn.Config(
+        app,
+        host="0.0.0.0",
+        port=49162,
+        log_level="info"
+    )
+    server = uvicorn.Server(config)
+    await server.serve()
+
+
+# ─────────────────────────────────────
+# BotとWebサーバーを同時起動
+# ─────────────────────────────────────
+async def main_async():
+    # ★ bot.start() の前に必ず Cog をロードする ★
+    load_cogs_sync()
+
+    await asyncio.gather(
+        start_bot(),
+        start_dashboard()
+    )
+
+
+# ─────────────────────────────────────
+# エントリーポイント
+# ─────────────────────────────────────
 def main():
-    asyncio.run(start_bot())
+    try:
+        asyncio.run(main_async())
+    except KeyboardInterrupt:
+        print("Shutting down...")
 
 
 if __name__ == "__main__":
