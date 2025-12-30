@@ -3,6 +3,7 @@ from discord.ext import commands
 import settings
 from utils.embed_utils import embed_notice_start, embed_notice_end
 from utils import db_utils
+from utils.voice_utils import is_channel_transition
 
 
 class VCNotice(commands.Cog):
@@ -64,6 +65,10 @@ class VCNotice(commands.Cog):
         self, member: discord.Member, before: discord.VoiceState, after: discord.VoiceState
     ):
         if member.bot:
+            return
+
+        # ミュートや画面共有などの状態変更は無視し、入退室のみを対象とする
+        if not is_channel_transition(before, after):
             return
 
         now = discord.utils.utcnow()
