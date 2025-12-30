@@ -10,6 +10,7 @@ import aiohttp
 from urllib.parse import urlencode
 
 import settings
+from utils import db_utils
 
 templates = Jinja2Templates(directory="templates")
 
@@ -156,6 +157,60 @@ def create_app(bot):
         return templates.TemplateResponse(
             "index.html",
             {"request": request, "user": user, "guilds": guilds},
+        )
+
+    # -------------------------------------------------------
+    # /api/user（フロントエンドの初期化用）
+    # -------------------------------------------------------
+    @app.get("/api/user")
+    async def api_user(request: Request):
+        user = require_login(request)
+        if not user:
+            return JSONResponse({"authenticated": False})
+
+        return JSONResponse({"authenticated": True, "user": user})
+
+    # -------------------------------------------------------
+    # /logout
+    # -------------------------------------------------------
+    @app.get("/logout")
+    async def logout(request: Request):
+        request.session.clear()
+        return RedirectResponse("/login")
+
+    # -------------------------------------------------------
+    # /guild/{guild_id}
+    # -------------------------------------------------------
+    @app.get("/guild/{guild_id}", response_class=HTMLResponse)
+    async def guild_detail(request: Request, guild_id: int):
+        user = require_login(request)
+        if not user:
+            return RedirectResponse("/login")
+
+        guild = bot.get_guild(int(guild_id)) if bot else None
+        if not guild:
+            return HTMLResponse("Guild not found", status_code=404)
+
+        vc_list = [
+            {
+                "id": vc.id,
+                "name": vc.name,
+                "members": [member.display_name for member in vc.members],
+            }
+            for vc in guild.voice_channels
+        ]
+
+        sessions = db_utils.get_sessions_by_guild(guild_id=guild.id, limit=50)
+
+        return templates.TemplateResponse(
+            "guild.html",
+            {
+                "request": request,
+                "user": user,
+                "guild": {"id": guild.id, "name": guild.name},
+                "vc_list": vc_list,
+                "sessions": sessions,
+            },
         )
 
     # -------------------------------------------------------
