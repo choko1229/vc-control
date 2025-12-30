@@ -95,6 +95,21 @@ Discordサーバー内のボイスチャンネル(VC)の状態を監視し、
 
 ---
 
+## ⚙️ セットアップ
+
+1. `settings-template.json` を `settings.json` にコピーします。
+2. 下記の値を埋めてください（すべて必須）。
+   - `TOKEN`: Discord Bot のトークン
+   - `BASE_VC_ID`: 基本となる待機VCのID
+   - `VC_CATEGORY_ID`: VCをまとめるカテゴリのID
+   - `NOTICE_CHANNEL_ID`: VC開始/終了サマリを投稿するテキストチャンネルID
+   - `FIRST_EMPTY_NOTICE_SEC` / `FINAL_DELETE_SEC`: 無人VCの削除までの秒数
+   - `DISCORD_CLIENT_ID` / `DISCORD_CLIENT_SECRET` / `DISCORD_REDIRECT_URI`: ダッシュボード用のDiscord OAuth2情報
+   - `DASHBOARD_SESSION_SECRET`: ダッシュボードのセッション暗号化キー（適当なランダム文字列）
+3. `settings.json` は秘匿情報のためリポジトリには含めないでください（`.gitignore` で除外済み）。
+
+---
+
 ## 💡 今後の拡張予定
 - セッション履歴の永続化（JSON / SQLite）
 - 週ごとのVC利用統計レポート
