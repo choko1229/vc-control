@@ -213,4 +213,23 @@ def create_app(bot):
             },
         )
 
+    # -------------------------------------------------------
+    # /api/user（フロントエンドの初期化用）
+    # -------------------------------------------------------
+    @app.get("/api/user")
+    async def api_user(request: Request):
+        user = require_login(request)
+        if not user:
+            return JSONResponse({"authenticated": False})
+
+        return JSONResponse({"authenticated": True, "user": user})
+
+    # -------------------------------------------------------
+    # /logout
+    # -------------------------------------------------------
+    @app.get("/logout")
+    async def logout(request: Request):
+        request.session.clear()
+        return RedirectResponse("/login")
+
     return app
