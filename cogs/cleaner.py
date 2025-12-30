@@ -3,6 +3,7 @@ from discord.ext import commands
 import asyncio
 import settings
 from utils.embed_utils import embed_empty_notice
+from utils.voice_utils import is_channel_transition
 
 
 class VCCleaner(commands.Cog):
@@ -45,6 +46,10 @@ class VCCleaner(commands.Cog):
     async def on_voice_state_update(
         self, member: discord.Member, before: discord.VoiceState, after: discord.VoiceState
     ):
+        # ミュートや画面共有などの同一VC内での状態変化は対象外
+        if not is_channel_transition(before, after):
+            return
+
         # ===== 入室 → 削除スケジュールのキャンセル（BASE VC 除外） =====
         if (
             after.channel

@@ -1,7 +1,8 @@
 # dashboard_app.py
 
 from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
 
@@ -45,6 +46,9 @@ DISCORD_SCOPES = ["identify", "guilds"]
 # ===========================================================
 def create_app(bot):
     app = FastAPI(title="VC Dashboard")
+
+    # 静的ファイル（/static/*）
+    app.mount("/static", StaticFiles(directory="static"), name="static")
 
     # セッションミドルウェア（Cookie保存）
     app.add_middleware(
@@ -125,6 +129,7 @@ def create_app(bot):
             "id": user_data.get("id"),
             "username": user_data.get("username"),
             "global_name": user_data.get("global_name"),
+            "avatar": user_data.get("avatar"),
         }
 
         print("🟢 user データをセッション保存")
@@ -140,9 +145,36 @@ def create_app(bot):
         if not user:
             return RedirectResponse("/login")
 
+        guilds = []
+        try:
+            for g in bot.guilds:
+                vc_count = sum(len(vc.members) for vc in g.voice_channels)
+                guilds.append({"id": g.id, "name": g.name, "vc_count": vc_count})
+        except Exception:
+            guilds = []
+
         return templates.TemplateResponse(
             "index.html",
-            {"request": request, "user": user},
+            {"request": request, "user": user, "guilds": guilds},
         )
+
+    # -------------------------------------------------------
+    # /api/user（フロントエンドの初期化用）
+    # -------------------------------------------------------
+    @app.get("/api/user")
+    async def api_user(request: Request):
+        user = require_login(request)
+        if not user:
+            return JSONResponse({"authenticated": False})
+
+        return JSONResponse({"authenticated": True, "user": user})
+
+    # -------------------------------------------------------
+    # /logout
+    # -------------------------------------------------------
+    @app.get("/logout")
+    async def logout(request: Request):
+        request.session.clear()
+        return RedirectResponse("/login")
 
     return app
