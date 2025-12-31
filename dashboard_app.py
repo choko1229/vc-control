@@ -220,6 +220,22 @@ def create_app(bot):
         return JSONResponse({"authenticated": True, "user": user})
 
     # -------------------------------------------------------
+    # /api/usage（利用統計）
+    # -------------------------------------------------------
+    @app.get("/api/usage")
+    async def api_usage(request: Request):
+        user = require_login(request)
+        if not user:
+            return JSONResponse({"ok": False, "error": "auth_required"}, status_code=401)
+
+        try:
+            usage = db_utils.get_usage_for_user(int(user["id"]), days=7)
+        except Exception as e:
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
+        return JSONResponse({"ok": True, **usage})
+
+    # -------------------------------------------------------
     # /logout
     # -------------------------------------------------------
     @app.get("/logout")
@@ -251,6 +267,10 @@ def create_app(bot):
                 continue
             session = notice_sessions.get(vc.id, {})
             starter_id = session.get("starter_id") if isinstance(session, dict) else None
+            starter_name = None
+            participants = session.get("participants") if isinstance(session, dict) else None
+            if participants and starter_id in participants:
+                starter_name = participants[starter_id].get("name")
             vc_list.append(
                 {
                     "id": vc.id,
@@ -258,6 +278,7 @@ def create_app(bot):
                     "members": [member.display_name for member in vc.members],
                     "manage_url": build_manage_url(guild.id, vc.id),
                     "starter_id": starter_id,
+                    "starter_name": starter_name,
                     "can_manage": can_manage(member, starter_id),
                 }
             )
@@ -478,7 +499,24 @@ def create_app(bot):
         if isinstance(session, dict):
             allowed_channels.update(session.get("team_channels", {}).values())
 
-        if not target_channel or target_channel.id not in allowed_channels:
+        if target_channel and target_channel.id not in allowed_channels:
+            # 失われたセッション情報や再起動後でも、同カテゴリかつ元VC名の派生
+            # チャンネルは許可する（例: "{VC名}-A"）。
+            if (
+                target_channel.category
+                and target_channel.category.id == vc.category.id
+                and target_channel.name.startswith(f"{vc.name}-")
+            ):
+                if isinstance(session, dict):
+                    session.setdefault("team_channels", {})
+                    suffix = target_channel.name[len(vc.name) + 1 :].strip()
+                    if suffix:
+                        session["team_channels"].setdefault(suffix, target_channel.id)
+            else:
+                return JSONResponse(
+                    {"ok": False, "error": "member_not_in_vc"}, status_code=404
+                )
+        elif not target_channel:
             return JSONResponse({"ok": False, "error": "member_not_in_vc"}, status_code=404)
 
         payload = await request.json()

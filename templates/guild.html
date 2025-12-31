@@ -19,7 +19,7 @@
       <div>
         <h1>{{ guild.name }}</h1>
         <p>Discord 風のカードでボイスチャンネル状況を一覧化。リアルタイムで参加メンバーが更新されます。</p>
-        <div class="badge">ギルド ID: {{ guild.id }}</div>
+        <div class="badge">チャンネル数: {{ vc_list|length }} / 履歴 {{ sessions|length }} 件</div>
       </div>
       <div class="card">
         <h3>現在のステータス</h3>
@@ -40,9 +40,8 @@
       {% for vc in vc_list %}
         <div class="card">
           <h3>{{ vc.name }}</h3>
-          <div class="guild-meta">VC ID: {{ vc.id }}</div>
-          {% if vc.starter_id %}
-            <div class="badge" style="margin:8px 0 4px;">開始ユーザーID: {{ vc.starter_id }}</div>
+          {% if vc.starter_name %}
+            <div class="badge" style="margin:8px 0 4px;">開始ユーザー: {{ vc.starter_name }}</div>
           {% endif %}
           {% if vc.members %}
             <div class="pills">
@@ -70,7 +69,7 @@
         <table>
           <thead>
             <tr>
-              <th>ID</th>
+              <th>#</th>
               <th>VC名</th>
               <th>開始時刻</th>
               <th>終了時刻</th>
@@ -81,7 +80,7 @@
           <tbody>
             {% for s in sessions %}
               <tr>
-                <td>{{ s.id }}</td>
+                <td>{{ loop.index }}</td>
                 <td>{{ s.vc_name }}</td>
                 <td>{{ s.started_at }}</td>
                 <td>{{ s.ended_at }}</td>

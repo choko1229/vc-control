@@ -40,6 +40,23 @@
       </div>
     </section>
 
+    <section class="card-grid" id="usage-box">
+      <div class="card">
+        <h3>最近の通話時間</h3>
+        <p class="helper">直近のセッションから合計利用時間と曜日別の傾向を表示します。</p>
+        <div class="metric">
+          <div class="metric-value" id="usage-total">--</div>
+          <div class="metric-label">合計通話時間</div>
+        </div>
+        <div class="chart" id="usage-daily"></div>
+      </div>
+      <div class="card">
+        <h3>時間帯別の参加状況</h3>
+        <p class="helper">どの時間帯で通話が多いかを確認できます。</p>
+        <div class="chart" id="usage-hourly"></div>
+      </div>
+    </section>
+
     <h2 class="section-title">参加しているギルド</h2>
     <div class="grid">
       {% for g in guilds %}

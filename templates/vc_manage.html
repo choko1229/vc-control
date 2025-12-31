@@ -22,7 +22,7 @@
       <div>
         <h1>{{ vc.name }}</h1>
         <p>VC開始ユーザーとサーバー管理者だけがアクセスできる管理パネルです。VC名・最大人数・ビットレートを即時変更できます。</p>
-        <div class="badge">ギルド: {{ guild.name }} / VC ID: {{ vc.id }}</div>
+        <div class="badge">ギルド: {{ guild.name }} / チャンネル: {{ vc.name }}</div>
         {% if vc.starter_name %}
           <div class="badge" style="margin-top:8px;">開始ユーザー: {{ vc.starter_name }}</div>
         {% endif %}
