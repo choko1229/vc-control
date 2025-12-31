@@ -22,6 +22,7 @@ def load_cogs_sync():
     bot.load_extension("cogs.presence")
     bot.load_extension("cogs.vc_manager")
     bot.load_extension("cogs.vc_notice")
+    bot.load_extension("cogs.vc_team")
     bot.load_extension("cogs.dm_forward")
     bot.load_extension("cogs.cleaner")
     print("[INFO] Cogs Loaded Successfully.")
