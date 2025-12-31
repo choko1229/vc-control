@@ -251,6 +251,31 @@ header {
   font-size: 15px;
 }
 
+.form-card h3 {
+  margin-top: 0;
+  margin-bottom: 12px;
+}
+
+.form-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 12px;
+  color: var(--muted);
+}
+
+.helper {
+  color: var(--muted);
+  font-size: 13px;
+  margin-top: 6px;
+}
+
+.action-row {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 6px;
+}
+
 .actions { display: flex; gap: 12px; margin-top: 18px; }
 
 @media (max-width: 780px) {

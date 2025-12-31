@@ -5,6 +5,7 @@ README の設定手順に沿って settings-template.json を複製して使用�
 
 import json
 from pathlib import Path
+from urllib.parse import urlparse
 
 CONFIG_PATH = Path(__file__).with_name("settings.json")
 
@@ -44,6 +45,20 @@ def _require_str(config: dict, key: str) -> str:
     return str(value)
 
 
+def _optional_str(config: dict, key: str, default: str | None = None) -> str:
+    value = config.get(key, default)
+    if value is None:
+        return ""
+    return str(value)
+
+
+def _derive_base_url_from_redirect(redirect_uri: str) -> str:
+    parsed = urlparse(redirect_uri)
+    if parsed.scheme and parsed.netloc:
+        return f"{parsed.scheme}://{parsed.netloc}"
+    return ""
+
+
 _config = _load_config()
 
 # Discord Bot Token / VC 基本設定
@@ -61,3 +76,6 @@ DISCORD_CLIENT_ID = _require_str(_config, "DISCORD_CLIENT_ID")
 DISCORD_CLIENT_SECRET = _require_str(_config, "DISCORD_CLIENT_SECRET")
 DISCORD_REDIRECT_URI = _require_str(_config, "DISCORD_REDIRECT_URI")
 DASHBOARD_SESSION_SECRET = _require_str(_config, "DASHBOARD_SESSION_SECRET")
+DASHBOARD_BASE_URL = _optional_str(
+    _config, "DASHBOARD_BASE_URL", _derive_base_url_from_redirect(DISCORD_REDIRECT_URI)
+).rstrip("/") or _derive_base_url_from_redirect(DISCORD_REDIRECT_URI)

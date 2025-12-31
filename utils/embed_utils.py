@@ -58,3 +58,16 @@ def embed_notice_end(vc_name, started_at, ended_at, participants):
         ),
         color=0xE74C3C
     )
+
+
+def embed_manage_panel(vc_name: str, manage_url: str, starter_name: str | None = None):
+    description = (
+        f"{vc_name} の管理ページが利用できます。\n"
+        f"[管理画面を開く]({manage_url}) からVC名・最大人数・ビットレートを変更できます。"
+    )
+    if starter_name:
+        description += f"\n開始ユーザー: {starter_name}"
+
+    return discord.Embed(
+        title="VC管理パネル", description=description, color=0x5865F2
+    )

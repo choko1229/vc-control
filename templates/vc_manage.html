@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <title>{{ vc.name }} - VC管理</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header>
+    <div class="logo">
+      <div class="logo-mark"></div>
+      <div>VC Dashboard</div>
+    </div>
+    <div class="actions">
+      <a class="cta-button secondary" href="/guild/{{ guild.id }}">ギルドに戻る</a>
+      <a class="cta-button secondary" href="/">ホーム</a>
+    </div>
+  </header>
+
+  <main class="container">
+    <section class="hero">
+      <div>
+        <h1>{{ vc.name }}</h1>
+        <p>VC開始ユーザーとサーバー管理者だけがアクセスできる管理パネルです。VC名・最大人数・ビットレートを即時変更できます。</p>
+        <div class="badge">ギルド: {{ guild.name }} / VC ID: {{ vc.id }}</div>
+        {% if vc.starter_name %}
+          <div class="badge" style="margin-top:8px;">開始ユーザー: {{ vc.starter_name }}</div>
+        {% endif %}
+        {% if is_admin %}
+          <div class="guild-meta" style="margin-top:8px;">権限: サーバー管理者</div>
+        {% elif is_owner %}
+          <div class="guild-meta" style="margin-top:8px;">権限: VC開始ユーザー</div>
+        {% endif %}
+      </div>
+      <div class="card form-card">
+        <h3>VC設定を編集</h3>
+        <form id="vc-form">
+          <label class="form-group">
+            <span>VC名</span>
+            <input class="input" type="text" name="name" value="{{ vc.name }}" maxlength="100" required />
+          </label>
+          <label class="form-group">
+            <span>最大人数 (0で無制限)</span>
+            <input class="input" type="number" name="user_limit" min="0" max="99" value="{{ vc.user_limit }}" />
+          </label>
+          <label class="form-group">
+            <span>ビットレート (最大 {{ limits.bitrate }} bps)</span>
+            <input class="input" type="number" name="bitrate" min="8000" max="{{ limits.bitrate }}" step="1000" value="{{ vc.bitrate }}" />
+            <div class="helper">ギルド上限に自動でクランプされます。</div>
+          </label>
+          <div class="action-row">
+            <button type="submit" class="cta-button">保存する</button>
+          </div>
+          <div id="vc-status" class="helper"></div>
+        </form>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    (function() {
+      const form = document.getElementById("vc-form");
+      const statusEl = document.getElementById("vc-status");
+
+      async function submitForm(evt) {
+        evt.preventDefault();
+        statusEl.textContent = "保存中...";
+
+        const payload = {
+          name: form.elements["name"].value,
+          user_limit: Number(form.elements["user_limit"].value || 0),
+          bitrate: Number(form.elements["bitrate"].value || {{ vc.bitrate }})
+        };
+
+        try {
+          const res = await fetch(`/guild/{{ guild.id }}/vc/{{ vc.id }}/update`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload)
+          });
+          const data = await res.json();
+
+          if (!res.ok || !data.ok) {
+            const err = data.error || "保存に失敗しました";
+            statusEl.textContent = `エラー: ${err}`;
+            statusEl.style.color = "#e74c3c";
+            return;
+          }
+
+          statusEl.textContent = "保存しました";
+          statusEl.style.color = "#2ecc71";
+        } catch (e) {
+          statusEl.textContent = "エラー: 保存中に問題が発生しました";
+          statusEl.style.color = "#e74c3c";
+        }
+      }
+
+      form.addEventListener("submit", submitForm);
+    })();
+  </script>
+</body>
+</html>

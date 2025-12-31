@@ -40,6 +40,10 @@
       {% for vc in vc_list %}
         <div class="card">
           <h3>{{ vc.name }}</h3>
+          <div class="guild-meta">VC ID: {{ vc.id }}</div>
+          {% if vc.starter_id %}
+            <div class="badge" style="margin:8px 0 4px;">開始ユーザーID: {{ vc.starter_id }}</div>
+          {% endif %}
           {% if vc.members %}
             <div class="pills">
               {% for member in vc.members %}
@@ -48,6 +52,11 @@
             </div>
           {% else %}
             <div class="empty-state">誰もいません</div>
+          {% endif %}
+          {% if vc.can_manage or is_admin %}
+            <div class="actions" style="margin-top:12px;">
+              <a class="cta-button secondary" href="{{ vc.manage_url }}">このVCを管理</a>
+            </div>
           {% endif %}
         </div>
       {% else %}
