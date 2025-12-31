@@ -3,75 +3,115 @@
 <head>
   <meta charset="UTF-8" />
   <title>{{ guild.name }} - VC詳細</title>
+  <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
-  <h1>{{ guild.name }} のVC状況</h1>
-  <a href="/">← 戻る</a>
+  <header>
+    <div class="logo">
+      <div class="logo-mark"></div>
+      <div>VC Dashboard</div>
+    </div>
+    <a class="cta-button secondary" href="/">ホームに戻る</a>
+  </header>
 
-  <h2>現在のVC一覧</h2>
-  <div id="vc-list">
-    <ul>
-      {% for vc in vc_list %}
-        <li>
-          <strong>{{ vc.name }}</strong><br />
-          参加者:
-          {% if vc.members %}
-            {{ ", ".join(vc.members) }}
+  <main class="container">
+    <section class="hero">
+      <div>
+        <h1>{{ guild.name }}</h1>
+        <p>Discord 風のカードでボイスチャンネル状況を一覧化。リアルタイムで参加メンバーが更新されます。</p>
+        <div class="badge">ギルド ID: {{ guild.id }}</div>
+      </div>
+      <div class="card">
+        <h3>現在のステータス</h3>
+        <div id="vc-overview">
+          {% if vc_list %}
+            {% for vc in vc_list %}
+              <div class="kv"><span>{{ vc.name }}</span><span>{{ vc.members|length }} 名</span></div>
+            {% endfor %}
           {% else %}
-            誰もいません
+            <div class="empty-state">ボイスチャンネルがありません</div>
           {% endif %}
-        </li>
+        </div>
+      </div>
+    </section>
+
+    <h2 class="section-title">現在の VC</h2>
+    <div class="grid" id="vc-list">
+      {% for vc in vc_list %}
+        <div class="card">
+          <h3>{{ vc.name }}</h3>
+          <div class="guild-meta">VC ID: {{ vc.id }}</div>
+          {% if vc.starter_id %}
+            <div class="badge" style="margin:8px 0 4px;">開始ユーザーID: {{ vc.starter_id }}</div>
+          {% endif %}
+          {% if vc.members %}
+            <div class="pills">
+              {% for member in vc.members %}
+                <span class="pill">{{ member }}</span>
+              {% endfor %}
+            </div>
+          {% else %}
+            <div class="empty-state">誰もいません</div>
+          {% endif %}
+          {% if vc.can_manage or is_admin %}
+            <div class="actions" style="margin-top:12px;">
+              <a class="cta-button secondary" href="{{ vc.manage_url }}">このVCを管理</a>
+            </div>
+          {% endif %}
+        </div>
+      {% else %}
+        <div class="card empty-state">ボイスチャンネルがありません。</div>
       {% endfor %}
-    </ul>
-  </div>
+    </div>
 
-  <hr>
-
-  <h2>最近のVC履歴（最大50件）</h2>
-  {% if sessions %}
-    <table border="1" cellpadding="4">
-      <thead>
-        <tr>
-          <th>ID</th>
-          <th>VC名</th>
-          <th>開始時刻</th>
-          <th>終了時刻</th>
-          <th>継続時間(秒)</th>
-          <th>参加ユーザー</th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for s in sessions %}
-          <tr>
-            <td>{{ s.id }}</td>
-            <td>{{ s.vc_name }}</td>
-            <td>{{ s.started_at }}</td>
-            <td>{{ s.ended_at }}</td>
-            <td>{{ s.duration_sec }}</td>
-            <td>
-              {% if s.participants %}
-                <ul>
-                  {% for uid, p in s.participants.items() %}
-                    <li>{{ p.name }}（{{ p.total_sec }}秒）</li>
-                  {% endfor %}
-                </ul>
-              {% else %}
-                -
-              {% endif %}
-            </td>
-          </tr>
-        {% endfor %}
-      </tbody>
-    </table>
-  {% else %}
-    <p>まだ履歴はありません。</p>
-  {% endif %}
+    <h2 class="section-title">最近の VC 履歴（最大50件）</h2>
+    {% if sessions %}
+      <div class="table-wrapper">
+        <table>
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>VC名</th>
+              <th>開始時刻</th>
+              <th>終了時刻</th>
+              <th>継続時間(秒)</th>
+              <th>参加ユーザー</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for s in sessions %}
+              <tr>
+                <td>{{ s.id }}</td>
+                <td>{{ s.vc_name }}</td>
+                <td>{{ s.started_at }}</td>
+                <td>{{ s.ended_at }}</td>
+                <td>{{ s.duration_sec }}</td>
+                <td>
+                  {% if s.participants %}
+                    <div class="pills">
+                      {% for uid, p in s.participants.items() %}
+                        <span class="pill">{{ p.name }}（{{ p.total_sec }}秒）</span>
+                      {% endfor %}
+                    </div>
+                  {% else %}
+                    <span class="guild-meta">-</span>
+                  {% endif %}
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% else %}
+      <div class="card empty-state">まだ履歴はありません。</div>
+    {% endif %}
+  </main>
 
   <script>
-    // WebSocket で VC 状況をリアルタイム更新
     (function() {
       const guildId = {{ guild.id }};
       const vcListDiv = document.getElementById("vc-list");
+      const vcOverview = document.getElementById("vc-overview");
 
       const protocol = (location.protocol === "https:") ? "wss://" : "ws://";
       const wsUrl = protocol + location.host + "/ws";
@@ -86,29 +126,32 @@
           const g = guilds.find(x => x.id === guildId);
           if (!g) return;
 
-          const htmlParts = [];
-          htmlParts.push("<ul>");
-          for (const vc of g.vcs) {
-            const members = (vc.members && vc.members.length)
-              ? vc.members.join(", ")
-              : "誰もいません";
-            htmlParts.push(
-              `<li><strong>${vc.name}</strong><br>参加者: ${members}</li>`
-            );
+          const listParts = [];
+          if (g.vcs.length === 0) {
+            listParts.push('<div class="card empty-state">ボイスチャンネルがありません。</div>');
+          } else {
+            for (const vc of g.vcs) {
+              const members = (vc.members && vc.members.length)
+                ? vc.members.map(m => `<span class="pill">${m}</span>`).join("")
+                : '<div class="empty-state">誰もいません</div>';
+              listParts.push(`<div class="card"><h3>${vc.name}</h3>${members.startsWith('<div') ? members : `<div class="pills">${members}</div>`}</div>`);
+            }
           }
-          htmlParts.push("</ul>");
-          vcListDiv.innerHTML = htmlParts.join("");
+          vcListDiv.innerHTML = listParts.join("");
+
+          const overviewParts = [];
+          if (g.vcs.length === 0) {
+            overviewParts.push('<div class="empty-state">ボイスチャンネルがありません</div>');
+          } else {
+            for (const vc of g.vcs) {
+              const count = (vc.members && vc.members.length) ? vc.members.length : 0;
+              overviewParts.push(`<div class="kv"><span>${vc.name}</span><span>${count} 名</span></div>`);
+            }
+          }
+          vcOverview.innerHTML = overviewParts.join("");
         } catch (e) {
           console.error("WebSocket message parse error:", e);
         }
-      };
-
-      ws.onopen = () => {
-        console.log("WebSocket connected");
-      };
-
-      ws.onclose = () => {
-        console.log("WebSocket closed");
       };
     })();
   </script>

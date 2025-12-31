@@ -1,0 +1,338 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <title>{{ vc.name }} - VC管理</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header>
+    <div class="logo">
+      <div class="logo-mark"></div>
+      <div>VC Dashboard</div>
+    </div>
+    <div class="actions">
+      <a class="cta-button secondary" href="/guild/{{ guild.id }}">ギルドに戻る</a>
+      <a class="cta-button secondary" href="/">ホーム</a>
+    </div>
+  </header>
+
+  <main class="container">
+    <section class="hero">
+      <div>
+        <h1>{{ vc.name }}</h1>
+        <p>VC開始ユーザーとサーバー管理者だけがアクセスできる管理パネルです。VC名・最大人数・ビットレートを即時変更できます。</p>
+        <div class="badge">ギルド: {{ guild.name }} / VC ID: {{ vc.id }}</div>
+        {% if vc.starter_name %}
+          <div class="badge" style="margin-top:8px;">開始ユーザー: {{ vc.starter_name }}</div>
+        {% endif %}
+        {% if is_admin %}
+          <div class="guild-meta" style="margin-top:8px;">権限: サーバー管理者</div>
+        {% elif is_owner %}
+          <div class="guild-meta" style="margin-top:8px;">権限: VC開始ユーザー</div>
+        {% endif %}
+      </div>
+      <div class="card form-card">
+        <h3>VC設定を編集</h3>
+        <form id="vc-form">
+          <label class="form-group">
+            <span>VC名</span>
+            <input class="input" type="text" name="name" value="{{ vc.name }}" maxlength="100" required />
+          </label>
+          <label class="form-group">
+            <span>最大人数 (0で無制限)</span>
+            <input class="input" type="number" name="user_limit" min="0" max="99" value="{{ vc.user_limit }}" />
+          </label>
+          <label class="form-group">
+            <span>ビットレート (Kbps)</span>
+            <div class="slider-row">
+              <input class="input" type="range" name="bitrate" min="8" max="{{ (limits.bitrate // 1000) }}" step="1" value="{{ (vc.bitrate // 1000) }}" />
+              <div class="pill" id="bitrate-display">{{ (vc.bitrate // 1000) }} Kbps</div>
+            </div>
+            <div class="helper">ギルド上限 {{ (limits.bitrate // 1000) }} Kbps に自動でクランプされます。</div>
+          </label>
+          <div class="action-row">
+            <button type="submit" class="cta-button">保存する</button>
+          </div>
+          <div id="vc-status" class="helper"></div>
+        </form>
+      </div>
+    </section>
+
+    <section class="card-grid">
+      <div class="card" id="member-card">
+        <div class="card-header">
+          <div>
+            <h3>メンバー管理</h3>
+            <p class="helper">リアルタイムで接続時間とチームを監視し、個別にミュート/ディスエーブルできます。</p>
+          </div>
+          <div class="pill secondary" id="team-status">更新待ち</div>
+        </div>
+        <div class="member-list" id="member-list"></div>
+        <div class="action-row" style="margin-top: 12px;">
+          <button type="button" id="split-btn" class="cta-button">チームで分割</button>
+          <button type="button" id="gather-btn" class="cta-button secondary">全員集合</button>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    (function() {
+      const form = document.getElementById("vc-form");
+      const statusEl = document.getElementById("vc-status");
+      const memberList = document.getElementById("member-list");
+      const teamStatus = document.getElementById("team-status");
+      const splitBtn = document.getElementById("split-btn");
+      const gatherBtn = document.getElementById("gather-btn");
+      let memberCache = {};
+      let lastFetchedAt = Date.now();
+
+      async function submitForm(evt) {
+        evt.preventDefault();
+        statusEl.textContent = "保存中...";
+
+        const bitrateKbps = Number(form.elements["bitrate"].value || {{ vc.bitrate // 1000 }});
+        const payload = {
+          name: form.elements["name"].value,
+          user_limit: Number(form.elements["user_limit"].value || 0),
+          bitrate: Math.round(bitrateKbps * 1000)
+        };
+
+        try {
+          const res = await fetch(`/guild/{{ guild.id }}/vc/{{ vc.id }}/update`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload)
+          });
+          const data = await res.json();
+
+          if (!res.ok || !data.ok) {
+            const err = data.error || "保存に失敗しました";
+            statusEl.textContent = `エラー: ${err}`;
+            statusEl.style.color = "#e74c3c";
+            return;
+          }
+
+          statusEl.textContent = "保存しました";
+          statusEl.style.color = "#2ecc71";
+        } catch (e) {
+          statusEl.textContent = "エラー: 保存中に問題が発生しました";
+          statusEl.style.color = "#e74c3c";
+        }
+      }
+
+      form.addEventListener("submit", submitForm);
+
+      function formatDuration(sec) {
+        const s = Number(sec);
+        const h = Math.floor(s / 3600);
+        const m = Math.floor((s % 3600) / 60);
+        const rem = Math.floor(s % 60);
+        const hh = h > 0 ? `${h}時間` : "";
+        const mm = `${m.toString().padStart(2, "0")}分`;
+        const ss = `${rem.toString().padStart(2, "0")}秒`;
+        return `${hh}${mm}${ss}`;
+      }
+
+      function renderMembers(data) {
+        memberCache = {};
+        lastFetchedAt = Date.now();
+        memberList.innerHTML = "";
+        if (!data.members || data.members.length === 0) {
+          memberList.innerHTML = '<div class="helper">現在ボイスチャンネルに接続しているメンバーはいません。</div>';
+          return;
+        }
+
+        data.members.forEach((m) => {
+          memberCache[m.id] = m;
+          const row = document.createElement("div");
+          row.className = "member-row";
+
+          const avatar = document.createElement("img");
+          avatar.className = "avatar sm";
+          avatar.src = m.avatar;
+          avatar.alt = `${m.name} avatar`;
+
+          const meta = document.createElement("div");
+          meta.className = "member-meta";
+          const title = document.createElement("div");
+          title.className = "title";
+          title.textContent = m.name;
+          const time = document.createElement("div");
+          time.className = "helper";
+          const span = document.createElement("span");
+          span.className = "time-counter";
+          span.dataset.id = m.id;
+          span.dataset.time = m.connected_seconds || 0;
+          span.dataset.base = `${lastFetchedAt}`;
+          time.textContent = "接続時間 ";
+          time.appendChild(span);
+          meta.appendChild(title);
+          meta.appendChild(time);
+
+          const teamWrap = document.createElement("div");
+          teamWrap.className = "team-options";
+          const noneId = `team-${m.id}-none`;
+          const noneLabel = document.createElement("label");
+          noneLabel.className = "chip";
+          noneLabel.htmlFor = noneId;
+          const noneInput = document.createElement("input");
+          noneInput.type = "radio";
+          noneInput.name = `team-${m.id}`;
+          noneInput.id = noneId;
+          noneInput.value = "";
+          noneInput.dataset.memberId = m.id;
+          if (!m.team) noneInput.checked = true;
+          noneLabel.appendChild(noneInput);
+          noneLabel.appendChild(document.createTextNode("未設定"));
+          teamWrap.appendChild(noneLabel);
+
+          ["A", "B", "C", "D"].forEach((v) => {
+            const id = `team-${m.id}-${v}`;
+            const label = document.createElement("label");
+            label.className = "chip";
+            label.htmlFor = id;
+            const input = document.createElement("input");
+            input.type = "radio";
+            input.name = `team-${m.id}`;
+            input.id = id;
+            input.value = v;
+            input.dataset.memberId = m.id;
+            if (v === m.team) input.checked = true;
+            label.appendChild(input);
+            label.appendChild(document.createTextNode(`${v}チーム`));
+            teamWrap.appendChild(label);
+          });
+
+          const controls = document.createElement("div");
+          controls.className = "member-controls";
+          const muteBtn = document.createElement("button");
+          muteBtn.className = "pill control";
+          muteBtn.dataset.action = "mute";
+          muteBtn.dataset.memberId = m.id;
+          muteBtn.textContent = m.server_mute ? "ミュート解除" : "サーバーミュート";
+
+          const deafBtn = document.createElement("button");
+          deafBtn.className = "pill control";
+          deafBtn.dataset.action = "deaf";
+          deafBtn.dataset.memberId = m.id;
+          deafBtn.textContent = m.server_deaf ? "聴覚戻す" : "サーバーディスエーブル";
+
+          controls.appendChild(teamWrap);
+          controls.appendChild(muteBtn);
+          controls.appendChild(deafBtn);
+
+          row.appendChild(avatar);
+          row.appendChild(meta);
+          row.appendChild(controls);
+          memberList.appendChild(row);
+        });
+      }
+
+      async function fetchState() {
+        try {
+          const res = await fetch(`/guild/{{ guild.id }}/vc/{{ vc.id }}/state`);
+          const data = await res.json();
+          if (!res.ok || !data.ok) {
+            teamStatus.textContent = data.error || "取得失敗";
+            return;
+          }
+          renderMembers(data);
+          teamStatus.textContent = "更新済み";
+        } catch (e) {
+          teamStatus.textContent = "接続エラー";
+        }
+      }
+
+      async function updateMember(memberId, payload) {
+        const res = await fetch(`/guild/{{ guild.id }}/vc/{{ vc.id }}/member/${memberId}/update`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload)
+        });
+        return res.json();
+      }
+
+      async function handleTeamChange(ev) {
+        const memberId = ev.target.dataset.memberId;
+        const team = ev.target.value || null;
+        const res = await updateMember(memberId, { team });
+        if (!res.ok) {
+          teamStatus.textContent = res.error || "更新失敗";
+        } else {
+          teamStatus.textContent = "チームを更新しました";
+        }
+        fetchState();
+      }
+
+      async function handleControlClick(ev) {
+        const btn = ev.target.closest("button.control");
+        if (!btn) return;
+        const memberId = btn.dataset.memberId;
+        const action = btn.dataset.action;
+        const cached = memberCache[memberId];
+        const payload = {};
+        if (action === "mute") {
+          payload.mute = !cached.server_mute;
+        } else if (action === "deaf") {
+          payload.deaf = !cached.server_deaf;
+        }
+        const res = await updateMember(memberId, payload);
+        if (!res.ok) {
+          teamStatus.textContent = res.error || "権限エラー";
+        } else {
+          teamStatus.textContent = "メンバーを更新しました";
+        }
+        fetchState();
+      }
+
+      async function handleSplit(type) {
+        const endpoint = type === "split" ? "split" : "gather";
+        const res = await fetch(`/guild/{{ guild.id }}/vc/{{ vc.id }}/teams/${endpoint}`, { method: "POST" });
+        const data = await res.json();
+        if (!res.ok || !data.ok) {
+          teamStatus.textContent = data.error || "操作に失敗しました";
+          return;
+        }
+        teamStatus.textContent = type === "split" ? "チームに分割しました" : "全員を集合させました";
+        fetchState();
+      }
+
+      function tickTimers() {
+        const now = Date.now();
+        document.querySelectorAll(".time-counter").forEach((el) => {
+          const base = Number(el.dataset.time || 0);
+          const baseAt = Number(el.dataset.base || lastFetchedAt);
+          const elapsed = base + Math.max(0, Math.floor((now - baseAt) / 1000));
+          el.textContent = formatDuration(elapsed);
+        });
+      }
+
+      memberList.addEventListener("change", (ev) => {
+        const radio = ev.target.closest("input[type=radio][data-member-id]");
+        if (radio) {
+          handleTeamChange(ev);
+        }
+      });
+      memberList.addEventListener("click", handleControlClick);
+      splitBtn.addEventListener("click", () => handleSplit("split"));
+      gatherBtn.addEventListener("click", () => handleSplit("gather"));
+
+      fetchState();
+      setInterval(fetchState, 10000);
+      setInterval(tickTimers, 1000);
+
+      const bitrateInput = form.elements["bitrate"];
+      const bitrateDisplay = document.getElementById("bitrate-display");
+      if (bitrateInput && bitrateDisplay) {
+        const updateDisplay = () => {
+          bitrateDisplay.textContent = `${bitrateInput.value} Kbps`;
+        };
+        bitrateInput.addEventListener("input", updateDisplay);
+        updateDisplay();
+      }
+    })();
+  </script>
+</body>
+</html>

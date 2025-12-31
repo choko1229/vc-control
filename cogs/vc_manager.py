@@ -3,6 +3,7 @@
 import discord
 from discord.ext import commands
 import settings
+from utils.voice_utils import is_channel_transition
 from utils.embed_utils import embed_join, embed_leave
 
 
@@ -48,6 +49,10 @@ class VCManager(commands.Cog):
     @commands.Cog.listener()
     async def on_voice_state_update(self, member, before, after):
         if member.bot:
+            return
+
+        # ミュート切り替えや画面共有など、同一VC内の状態変化は無視
+        if not is_channel_transition(before, after):
             return
 
         # BASE VC → 個人VC への誘導
