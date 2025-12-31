@@ -13,6 +13,7 @@ from urllib.parse import urlencode
 import settings
 from utils import db_utils
 from utils.voice_utils import active_seconds
+from datetime import datetime, timedelta
 
 templates = Jinja2Templates(directory="templates")
 
@@ -112,6 +113,14 @@ def create_app(bot):
 
     def team_cog():
         return bot.get_cog("VCTeam") if bot else None
+
+    def base_session_for(channel: discord.abc.GuildChannel | None):
+        notice_cog = bot.get_cog("VCNotice") if bot else None
+        if not notice_cog or not channel:
+            return None
+        if hasattr(notice_cog, "base_session_for_channel"):
+            return notice_cog.base_session_for_channel(channel)
+        return None
 
     def can_manage(member: discord.Member | None, starter_id: int | None):
         if member is None:
@@ -228,10 +237,27 @@ def create_app(bot):
         if not user:
             return JSONResponse({"ok": False, "error": "auth_required"}, status_code=401)
 
+        days = 7
         try:
-            usage = db_utils.get_usage_for_user(int(user["id"]), days=7)
+            usage = db_utils.get_usage_for_user(int(user["id"]), days=days)
         except Exception as e:
-            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+            print(f"[/api/usage] failed to load usage: {e}")
+            # Return an empty usage snapshot to avoid dashboard breakage.
+            usage = {
+                "total_seconds": 0,
+                "daily": [
+                    {
+                        "label": f"{day.month}/{day.day}",
+                        "seconds": 0,
+                    }
+                    for day in [
+                        (datetime.utcnow() - timedelta(days=days - 1 - i)).date()
+                        for i in range(days)
+                    ]
+                ],
+                "hourly": [0 for _ in range(24)],
+                "error": str(e),
+            }
 
         return JSONResponse({"ok": True, **usage})
 
@@ -506,7 +532,8 @@ def create_app(bot):
                 target_channel.category
                 and target_channel.category.id == vc.category.id
                 and target_channel.name.startswith(f"{vc.name}-")
-            ):
+            ) or base_session_for(target_channel) == vc.id:
+                allowed_channels.add(target_channel.id)
                 if isinstance(session, dict):
                     session.setdefault("team_channels", {})
                     suffix = target_channel.name[len(vc.name) + 1 :].strip()

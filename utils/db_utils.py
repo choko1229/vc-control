@@ -3,7 +3,11 @@ from pathlib import Path
 from datetime import datetime, timedelta
 import json
 
-DB_PATH = Path("vc_sessions.db")
+# Always place the DB next to this module so it is found regardless of CWD.
+DB_PATH = Path(__file__).with_name("vc_sessions.db")
+# Older builds stored the DB at the repository root; keep a reference so we can
+# migrate existing data if present.
+LEGACY_DB_PATH = Path("vc_sessions.db")
 
 
 def _get_conn():
@@ -12,6 +16,12 @@ def _get_conn():
 
 def init_db():
     """テーブルがなければ作成"""
+    if LEGACY_DB_PATH.exists() and not DB_PATH.exists():
+        try:
+            DB_PATH.write_bytes(LEGACY_DB_PATH.read_bytes())
+        except Exception:
+            pass
+
     conn = _get_conn()
     cur = conn.cursor()
     cur.execute(
