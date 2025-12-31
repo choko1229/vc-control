@@ -517,6 +517,17 @@ def create_app(bot):
         session = get_session_for(vc.id) or ensure_session(vc) or {}
         starter_id = session.get("starter_id") if isinstance(session, dict) else None
 
+        if isinstance(session, dict):
+            session.setdefault("team_channels", {})
+            # カテゴリ内にある派生VCを事前に復元し、許可チャンネルを広げる
+            if not session["team_channels"] and vc.category:
+                prefix = f"{vc.name}-"
+                for ch in vc.category.voice_channels:
+                    if ch.name.startswith(prefix):
+                        suffix = ch.name[len(prefix) :].strip()
+                        if suffix:
+                            session["team_channels"].setdefault(suffix, ch.id)
+
         if not can_manage(member, starter_id):
             return JSONResponse({"ok": False, "error": "forbidden"}, status_code=403)
 
