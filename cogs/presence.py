@@ -3,6 +3,7 @@
 import discord
 from discord.ext import commands
 import settings
+from utils.voice_utils import is_channel_transition
 
 
 class PresenceCog(commands.Cog):
@@ -39,8 +40,8 @@ class PresenceCog(commands.Cog):
     async def on_voice_state_update(self, member, before, after):
         if member.bot:
             return
-        # ミュート切り替えなどは無視したければ同様に条件追加
-        if before.channel == after.channel:
+        # ミュート切り替えなどの同一VC内の状態変更は無視し、入退室のみ反映
+        if not is_channel_transition(before, after):
             return
 
         await self.update_presence()

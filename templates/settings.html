@@ -3,29 +3,54 @@
 <head>
   <meta charset="UTF-8">
   <title>Bot設定</title>
+  <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
-  <h1>Bot 設定</h1>
-  <a href="/">← Dashboard</a>
-  <hr>
+  <header>
+    <div class="logo">
+      <div class="logo-mark"></div>
+      <div>VC Dashboard</div>
+    </div>
+    <a class="cta-button secondary" href="/">ダッシュボードへ</a>
+  </header>
 
-  <form method="POST" action="/settings">
-    <label>BASE_VC_ID：</label><br>
-    <input type="number" name="BASE_VC_ID" value="{{ settings.BASE_VC_ID }}"><br><br>
+  <main class="container">
+    <section class="hero">
+      <div>
+        <h1>Bot 設定</h1>
+        <p>必要な ID やタイマーをまとめて管理。落ち着いた Discord 風カードで視覚的に整理しています。</p>
+      </div>
+      <div class="badge">環境変数を変更したら保存してください</div>
+    </section>
 
-    <label>VC_CATEGORY_ID：</label><br>
-    <input type="number" name="VC_CATEGORY_ID" value="{{ settings.VC_CATEGORY_ID }}"><br><br>
-
-    <label>NOTICE_CHANNEL_ID：</label><br>
-    <input type="number" name="NOTICE_CHANNEL_ID" value="{{ settings.NOTICE_CHANNEL_ID }}"><br><br>
-
-    <label>FIRST_EMPTY_NOTICE_SEC：</label><br>
-    <input type="number" name="FIRST_EMPTY_NOTICE_SEC" value="{{ settings.FIRST_EMPTY_NOTICE_SEC }}"><br><br>
-
-    <label>FINAL_DELETE_SEC：</label><br>
-    <input type="number" name="FINAL_DELETE_SEC" value="{{ settings.FINAL_DELETE_SEC }}"><br><br>
-
-    <button type="submit">保存</button>
-  </form>
+    <form method="POST" action="/settings" class="card" style="margin-top:20px;">
+      <div class="form-grid">
+        <div>
+          <label class="label">BASE_VC_ID</label>
+          <input class="input" type="number" name="BASE_VC_ID" value="{{ settings.BASE_VC_ID }}">
+        </div>
+        <div>
+          <label class="label">VC_CATEGORY_ID</label>
+          <input class="input" type="number" name="VC_CATEGORY_ID" value="{{ settings.VC_CATEGORY_ID }}">
+        </div>
+        <div>
+          <label class="label">NOTICE_CHANNEL_ID</label>
+          <input class="input" type="number" name="NOTICE_CHANNEL_ID" value="{{ settings.NOTICE_CHANNEL_ID }}">
+        </div>
+        <div>
+          <label class="label">FIRST_EMPTY_NOTICE_SEC</label>
+          <input class="input" type="number" name="FIRST_EMPTY_NOTICE_SEC" value="{{ settings.FIRST_EMPTY_NOTICE_SEC }}">
+        </div>
+        <div>
+          <label class="label">FINAL_DELETE_SEC</label>
+          <input class="input" type="number" name="FINAL_DELETE_SEC" value="{{ settings.FINAL_DELETE_SEC }}">
+        </div>
+      </div>
+      <div class="actions">
+        <button class="cta-button" type="submit">保存</button>
+        <a class="cta-button secondary" href="/">キャンセル</a>
+      </div>
+    </form>
+  </main>
 </body>
 </html>

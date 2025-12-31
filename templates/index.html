@@ -1,38 +1,56 @@
 <!DOCTYPE html>
-<html>
+<html lang="ja">
 <head>
-    <meta charset="utf-8">
-    <title>VC Dashboard</title>
-    <script src="/static/dashboard.js"></script>
+  <meta charset="utf-8">
+  <title>VC Dashboard</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="/static/dashboard.js" defer></script>
 </head>
 <body>
-    <h1>VC Dashboard</h1>
-
-    <!-- 未ログインの場合 -->
-    <div id="login-box" style="display:none;">
-        <a href="/login">
-            <button>Discord でログイン</button>
-        </a>
+  <header>
+    <div class="logo">
+      <div class="logo-mark"></div>
+      <div>VC Dashboard</div>
     </div>
+    <div class="badge" id="user-status">ロード中...</div>
+  </header>
 
-    <!-- ログイン後 -->
-    <div id="user-box" style="display:none;">
-        <img id="user-avatar" width="64" height="64">
-        <p>ユーザー名：<span id="user-name"></span></p>
-        <p>ID：<span id="user-id"></span></p>
+  <main class="container">
+    <section class="hero">
+      <div>
+        <h1>Discord らしい VC 管理</h1>
+        <p>ダークトーンと鮮やかなアクセントでまとめた UI で、ギルドのボイス状況をひと目でチェック。リアルタイム更新で、誰がどこにいるかを常に把握できます。</p>
+        <div class="actions" id="cta-area">
+          <a class="cta-button" href="/login">Discord でログイン</a>
+          <a class="cta-button secondary" href="/settings">Bot 設定</a>
+        </div>
+      </div>
+      <div class="card" id="user-box" style="display:none;">
+        <div class="user-chip">
+          <img id="user-avatar" alt="avatar" />
+          <div>
+            <div id="user-name" style="font-weight:600;"></div>
+            <div id="user-id" class="guild-meta"></div>
+          </div>
+        </div>
+        <div class="badge" style="margin-top:12px;">ログイン済み</div>
+        <div class="actions">
+          <a class="cta-button secondary" href="/logout">ログアウト</a>
+        </div>
+      </div>
+    </section>
 
-        <a href="/logout">
-            <button>ログアウト</button>
+    <h2 class="section-title">参加しているギルド</h2>
+    <div class="grid">
+      {% for g in guilds %}
+        <a class="card guild-card" href="/guild/{{ g.id }}">
+          <div class="guild-name">{{ g.name }}</div>
+          <div class="guild-meta">通話中: {{ g.vc_count }}人</div>
         </a>
+      {% else %}
+        <div class="card empty-state">ギルドが見つかりませんでした。</div>
+      {% endfor %}
     </div>
-  <h2>ギルド一覧</h2>
-  <ul>
-    {% for g in guilds %}
-      <li>
-        <a href="/guild/{{ g.id }}">{{ g.name }}</a>
-        （通話中: {{ g.vc_count }}人）
-      </li>
-    {% endfor %}
-  </ul>
+  </main>
 </body>
 </html>
