@@ -81,17 +81,34 @@ Discordサーバー内のボイスチャンネル(VC)の状態を監視し、
 
 ## 🧩 実装構成
 
-- **Python 3.10+**
+- **Python 3.10+**（Python 3.13 では標準ライブラリの `audioop` が削除されたため、本リポジトリ同梱の互換モジュールで動作します）
 - **Pycord 2.x**
 - `settings.json` に各種IDとトークンを指定
 - Embedベース通知（タイトル／説明／アイコン／相対時刻対応）
 - JST(日本標準時)および `<t:UNIXTIME:R>` 相対時刻表記対応
 - メモリ上でセッション管理（参加者ごとの入退室・滞在時間）
+- VC開始時の管理リンクEmbed送信と、Web管理パネルでのVC設定変更（VC名/最大人数/ビットレート）
 
 ---
 
 ## 🧾 ライセンス
 このソフトウェアは [MIT License](LICENSE) のもとで公開されています。
+
+---
+
+## ⚙️ セットアップ
+
+1. `settings-template.json` を `settings.json` にコピーします。
+2. 下記の値を埋めてください（すべて必須）。
+   - `TOKEN`: Discord Bot のトークン
+   - `BASE_VC_ID`: 基本となる待機VCのID
+   - `VC_CATEGORY_ID`: VCをまとめるカテゴリのID
+   - `NOTICE_CHANNEL_ID`: VC開始/終了サマリを投稿するテキストチャンネルID
+   - `DASHBOARD_BASE_URL`: ダッシュボードを公開しているホスト（管理リンクEmbedで使用）
+   - `FIRST_EMPTY_NOTICE_SEC` / `FINAL_DELETE_SEC`: 無人VCの削除までの秒数
+   - `DISCORD_CLIENT_ID` / `DISCORD_CLIENT_SECRET` / `DISCORD_REDIRECT_URI`: ダッシュボード用のDiscord OAuth2情報
+   - `DASHBOARD_SESSION_SECRET`: ダッシュボードのセッション暗号化キー（適当なランダム文字列）
+3. `settings.json` は秘匿情報のためリポジトリには含めないでください（`.gitignore` で除外済み）。
 
 ---
 

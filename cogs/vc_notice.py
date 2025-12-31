@@ -1,8 +1,9 @@
 import discord
 from discord.ext import commands
 import settings
-from utils.embed_utils import embed_notice_start, embed_notice_end
+from utils.embed_utils import embed_notice_start, embed_notice_end, embed_manage_panel
 from utils import db_utils
+from utils.voice_utils import is_channel_transition
 
 
 class VCNotice(commands.Cog):
@@ -21,9 +22,16 @@ class VCNotice(commands.Cog):
                 "start": now,
                 "starter_id": member.id,
                 "notice_msg_id": None,
+                "manage_msg_id": None,
                 "participants": {},
             }
         return self.sessions[vc.id]
+
+    def build_manage_url(self, guild_id: int, vc_id: int) -> str:
+        base = settings.DASHBOARD_BASE_URL.rstrip("/") if settings.DASHBOARD_BASE_URL else ""
+        if base:
+            return f"{base}/guild/{guild_id}/vc/{vc_id}"
+        return f"/guild/{guild_id}/vc/{vc_id}"
 
     def member_join(self, vc_id: int, member: discord.Member, now):
         sess = self.sessions.get(vc_id)
@@ -66,6 +74,10 @@ class VCNotice(commands.Cog):
         if member.bot:
             return
 
+        # ミュートや画面共有などの状態変更は無視し、入退室のみを対象とする
+        if not is_channel_transition(before, after):
+            return
+
         now = discord.utils.utcnow()
 
         # ===== 入室 side（BASE VC 除外） =====
@@ -86,6 +98,26 @@ class VCNotice(commands.Cog):
                 if notice_ch:
                     msg = await notice_ch.send(embed=embed_notice_start(member, now))
                     sess["notice_msg_id"] = msg.id
+
+                manage_url = self.build_manage_url(member.guild.id, vc.id)
+                try:
+                    msg = await vc.send(
+                        embed=embed_manage_panel(
+                            vc.name, manage_url, starter_name=member.display_name
+                        )
+                    )
+                    sess["manage_msg_id"] = msg.id
+                except Exception as e:
+                    print(f"[VC管理リンク送信失敗] {e}")
+                    if notice_ch:
+                        try:
+                            await notice_ch.send(
+                                embed=embed_manage_panel(
+                                    vc.name, manage_url, starter_name=member.display_name
+                                )
+                            )
+                        except Exception:
+                            pass
             else:
                 if vc.id in self.sessions:
                     self.member_join(vc.id, member, now)
@@ -115,6 +147,14 @@ class VCNotice(commands.Cog):
                 if notice_ch and sess.get("notice_msg_id"):
                     try:
                         msg = await notice_ch.fetch_message(sess["notice_msg_id"])
+                        await msg.delete()
+                    except Exception:
+                        pass
+
+                # 管理パネルEmbed削除（VC内で送れていれば）
+                if sess.get("manage_msg_id"):
+                    try:
+                        msg = await vc.fetch_message(sess["manage_msg_id"])
                         await msg.delete()
                     except Exception:
                         pass
