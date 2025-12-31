@@ -246,6 +246,17 @@ header {
   font-size: 15px;
 }
 
+.slider-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.slider-row input[type=range] {
+  width: 100%;
+  accent-color: var(--accent);
+}
+
 .form-card h3 {
   margin-top: 0;
   margin-bottom: 12px;
@@ -272,6 +283,29 @@ header {
 }
 
 .actions { display: flex; gap: 12px; margin-top: 18px; }
+
+.team-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--text);
+}
+
+.chip input[type=radio] {
+  accent-color: var(--accent);
+}
 
 .card-grid {
   display: grid;

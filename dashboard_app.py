@@ -73,6 +73,14 @@ def create_app(bot):
         print(f"🟡 [DEBUG] require_login(): user = {user}")
         return user
 
+    def is_manageable_vc(vc: discord.abc.GuildChannel) -> bool:
+        return (
+            isinstance(vc, discord.VoiceChannel)
+            and vc.category
+            and vc.category.id == settings.VC_CATEGORY_ID
+            and vc.id != settings.BASE_VC_ID
+        )
+
     async def fetch_member(guild: discord.Guild, user_id: int):
         member = guild.get_member(user_id)
         if member:
@@ -239,6 +247,8 @@ def create_app(bot):
 
         vc_list = []
         for vc in guild.voice_channels:
+            if not is_manageable_vc(vc):
+                continue
             session = notice_sessions.get(vc.id, {})
             starter_id = session.get("starter_id") if isinstance(session, dict) else None
             vc_list.append(
@@ -280,7 +290,7 @@ def create_app(bot):
             return HTMLResponse("Guild not found", status_code=404)
 
         vc = guild.get_channel(int(vc_id))
-        if not isinstance(vc, discord.VoiceChannel):
+        if not is_manageable_vc(vc):
             return HTMLResponse("VC not found", status_code=404)
 
         member = await fetch_member(guild, int(user["id"]))
@@ -331,7 +341,7 @@ def create_app(bot):
             return JSONResponse({"ok": False, "error": "guild_not_found"}, status_code=404)
 
         vc = guild.get_channel(int(vc_id))
-        if not isinstance(vc, discord.VoiceChannel):
+        if not is_manageable_vc(vc):
             return JSONResponse({"ok": False, "error": "vc_not_found"}, status_code=404)
 
         member = await fetch_member(guild, int(user["id"]))
@@ -395,7 +405,7 @@ def create_app(bot):
             return JSONResponse({"ok": False, "error": "guild_not_found"}, status_code=404)
 
         vc = guild.get_channel(int(vc_id))
-        if not isinstance(vc, discord.VoiceChannel):
+        if not is_manageable_vc(vc):
             return JSONResponse({"ok": False, "error": "vc_not_found"}, status_code=404)
 
         member = await fetch_member(guild, int(user["id"]))
@@ -452,7 +462,7 @@ def create_app(bot):
             return JSONResponse({"ok": False, "error": "guild_not_found"}, status_code=404)
 
         vc = guild.get_channel(int(vc_id))
-        if not isinstance(vc, discord.VoiceChannel):
+        if not is_manageable_vc(vc):
             return JSONResponse({"ok": False, "error": "vc_not_found"}, status_code=404)
 
         member = await fetch_member(guild, int(user["id"]))
@@ -511,7 +521,7 @@ def create_app(bot):
             return JSONResponse({"ok": False, "error": "guild_not_found"}, status_code=404)
 
         vc = guild.get_channel(int(vc_id))
-        if not isinstance(vc, discord.VoiceChannel):
+        if not is_manageable_vc(vc):
             return JSONResponse({"ok": False, "error": "vc_not_found"}, status_code=404)
 
         member = await fetch_member(guild, int(user["id"]))
@@ -542,7 +552,7 @@ def create_app(bot):
             return JSONResponse({"ok": False, "error": "guild_not_found"}, status_code=404)
 
         vc = guild.get_channel(int(vc_id))
-        if not isinstance(vc, discord.VoiceChannel):
+        if not is_manageable_vc(vc):
             return JSONResponse({"ok": False, "error": "vc_not_found"}, status_code=404)
 
         member = await fetch_member(guild, int(user["id"]))

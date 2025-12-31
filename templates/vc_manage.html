@@ -44,9 +44,12 @@
             <input class="input" type="number" name="user_limit" min="0" max="99" value="{{ vc.user_limit }}" />
           </label>
           <label class="form-group">
-            <span>ビットレート (最大 {{ limits.bitrate }} bps)</span>
-            <input class="input" type="number" name="bitrate" min="8000" max="{{ limits.bitrate }}" step="1000" value="{{ vc.bitrate }}" />
-            <div class="helper">ギルド上限に自動でクランプされます。</div>
+            <span>ビットレート (Kbps)</span>
+            <div class="slider-row">
+              <input class="input" type="range" name="bitrate" min="8" max="{{ (limits.bitrate // 1000) }}" step="1" value="{{ (vc.bitrate // 1000) }}" />
+              <div class="pill" id="bitrate-display">{{ (vc.bitrate // 1000) }} Kbps</div>
+            </div>
+            <div class="helper">ギルド上限 {{ (limits.bitrate // 1000) }} Kbps に自動でクランプされます。</div>
           </label>
           <div class="action-row">
             <button type="submit" class="cta-button">保存する</button>
@@ -89,10 +92,11 @@
         evt.preventDefault();
         statusEl.textContent = "保存中...";
 
+        const bitrateKbps = Number(form.elements["bitrate"].value || {{ vc.bitrate // 1000 }});
         const payload = {
           name: form.elements["name"].value,
           user_limit: Number(form.elements["user_limit"].value || 0),
-          bitrate: Number(form.elements["bitrate"].value || {{ vc.bitrate }})
+          bitrate: Math.round(bitrateKbps * 1000)
         };
 
         try {
@@ -167,15 +171,38 @@
           meta.appendChild(title);
           meta.appendChild(time);
 
-          const teamSelect = document.createElement("select");
-          teamSelect.className = "input compact";
-          teamSelect.dataset.memberId = m.id;
-          ["", "A", "B", "C", "D"].forEach((v) => {
-            const opt = document.createElement("option");
-            opt.value = v;
-            opt.textContent = v === "" ? "チーム未設定" : `${v} チーム`;
-            if (v === (m.team || "")) opt.selected = true;
-            teamSelect.appendChild(opt);
+          const teamWrap = document.createElement("div");
+          teamWrap.className = "team-options";
+          const noneId = `team-${m.id}-none`;
+          const noneLabel = document.createElement("label");
+          noneLabel.className = "chip";
+          noneLabel.htmlFor = noneId;
+          const noneInput = document.createElement("input");
+          noneInput.type = "radio";
+          noneInput.name = `team-${m.id}`;
+          noneInput.id = noneId;
+          noneInput.value = "";
+          noneInput.dataset.memberId = m.id;
+          if (!m.team) noneInput.checked = true;
+          noneLabel.appendChild(noneInput);
+          noneLabel.appendChild(document.createTextNode("未設定"));
+          teamWrap.appendChild(noneLabel);
+
+          ["A", "B", "C", "D"].forEach((v) => {
+            const id = `team-${m.id}-${v}`;
+            const label = document.createElement("label");
+            label.className = "chip";
+            label.htmlFor = id;
+            const input = document.createElement("input");
+            input.type = "radio";
+            input.name = `team-${m.id}`;
+            input.id = id;
+            input.value = v;
+            input.dataset.memberId = m.id;
+            if (v === m.team) input.checked = true;
+            label.appendChild(input);
+            label.appendChild(document.createTextNode(`${v}チーム`));
+            teamWrap.appendChild(label);
           });
 
           const controls = document.createElement("div");
@@ -192,7 +219,7 @@
           deafBtn.dataset.memberId = m.id;
           deafBtn.textContent = m.server_deaf ? "聴覚戻す" : "サーバーディスエーブル";
 
-          controls.appendChild(teamSelect);
+          controls.appendChild(teamWrap);
           controls.appendChild(muteBtn);
           controls.appendChild(deafBtn);
 
@@ -283,7 +310,8 @@
       }
 
       memberList.addEventListener("change", (ev) => {
-        if (ev.target.matches("select[data-member-id]")) {
+        const radio = ev.target.closest("input[type=radio][data-member-id]");
+        if (radio) {
           handleTeamChange(ev);
         }
       });
@@ -294,6 +322,16 @@
       fetchState();
       setInterval(fetchState, 10000);
       setInterval(tickTimers, 1000);
+
+      const bitrateInput = form.elements["bitrate"];
+      const bitrateDisplay = document.getElementById("bitrate-display");
+      if (bitrateInput && bitrateDisplay) {
+        const updateDisplay = () => {
+          bitrateDisplay.textContent = `${bitrateInput.value} Kbps`;
+        };
+        bitrateInput.addEventListener("input", updateDisplay);
+        updateDisplay();
+      }
     })();
   </script>
 </body>
