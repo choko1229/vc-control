@@ -570,8 +570,22 @@ def create_app(bot):
         if "team" in payload:
             team_value = payload.get("team")
             team_controller = team_cog()
-            if team_controller and team_value in {"A", "B", "C", "D"}:
-                team_controller._assign_team(vc, target, str(team_value))
+            if team_value in {"A", "B", "C", "D"}:
+                if team_controller:
+                    team_controller._assign_team(vc, target, str(team_value))
+                elif isinstance(session, dict):
+                    parts = session.setdefault("participants", {})
+                    info = parts.get(target.id)
+                    if info is None:
+                        info = {
+                            "name": target.display_name,
+                            "total_sec": 0,
+                            "joined_at": discord.utils.utcnow(),
+                            "team": None,
+                        }
+                        parts[target.id] = info
+                    info["team"] = str(team_value)
+                    info["name"] = target.display_name
             elif isinstance(session, dict):
                 parts = session.get("participants", {})
                 if target.id in parts:
