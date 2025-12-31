@@ -24,8 +24,32 @@ class VCNotice(commands.Cog):
                 "notice_msg_id": None,
                 "manage_msg_id": None,
                 "participants": {},
+                "team_channels": {},
             }
         return self.sessions[vc.id]
+
+    def ensure_session_by_voice(self, vc: discord.VoiceChannel, now, starter=None):
+        """Create or return a session for the given VC.
+
+        If ``starter`` is omitted, the first non-bot member in the channel is
+        used as the starter id. This is used by dashboard/team APIs that may be
+        called after the initial join hook.
+        """
+
+        starter_member = starter or next((m for m in vc.members if not m.bot), None)
+        if not starter_member:
+            return None
+        return self.ensure_session(vc, starter_member, now)
+
+    def base_session_for_channel(self, channel: discord.VoiceChannel | None):
+        if not channel:
+            return None
+        for base_id, sess in self.sessions.items():
+            if base_id == channel.id:
+                return base_id
+            if channel.id in sess.get("team_channels", {}).values():
+                return base_id
+        return None
 
     def build_manage_url(self, guild_id: int, vc_id: int) -> str:
         base = settings.DASHBOARD_BASE_URL.rstrip("/") if settings.DASHBOARD_BASE_URL else ""
@@ -44,12 +68,14 @@ class VCNotice(commands.Cog):
                 "name": member.display_name,
                 "total_sec": 0,
                 "joined_at": now,
+                "team": None,
             }
             sess["participants"][member.id] = parts
         else:
             parts["name"] = member.display_name
             if parts.get("joined_at") is None:
                 parts["joined_at"] = now
+            parts.setdefault("team", None)
 
     def member_leave(self, vc_id: int, member: discord.Member, now):
         sess = self.sessions.get(vc_id)
@@ -80,6 +106,13 @@ class VCNotice(commands.Cog):
 
         now = discord.utils.utcnow()
 
+        before_base = self.base_session_for_channel(before.channel)
+        after_base = self.base_session_for_channel(after.channel)
+
+        # チームVC間の移動は同じセッションとして扱い、参加時間を途切れさせない
+        if before_base and after_base and before_base == after_base and after.channel:
+            return
+
         # ===== 入室 side（BASE VC 除外） =====
         if (
             after.channel
@@ -88,6 +121,12 @@ class VCNotice(commands.Cog):
             and after.channel.category.id == settings.VC_CATEGORY_ID
         ):
             vc = after.channel
+
+            # チームVCの場合はセッションを開始済みの親VCに紐づけるだけ
+            parent_id = self.base_session_for_channel(vc)
+            if parent_id and parent_id in self.sessions:
+                self.member_join(parent_id, member, now)
+                return
 
             if len(vc.members) == 1:
                 # セッション開始
@@ -130,6 +169,11 @@ class VCNotice(commands.Cog):
             and before.channel.category.id == settings.VC_CATEGORY_ID
         ):
             vc = before.channel
+
+            parent_id = self.base_session_for_channel(vc)
+            if parent_id and parent_id in self.sessions and parent_id != vc.id:
+                self.member_leave(parent_id, member, now)
+                return
 
             if vc.id in self.sessions:
                 self.member_leave(vc.id, member, now)

@@ -55,12 +55,35 @@
         </form>
       </div>
     </section>
+
+    <section class="card-grid">
+      <div class="card" id="member-card">
+        <div class="card-header">
+          <div>
+            <h3>メンバー管理</h3>
+            <p class="helper">リアルタイムで接続時間とチームを監視し、個別にミュート/ディスエーブルできます。</p>
+          </div>
+          <div class="pill secondary" id="team-status">更新待ち</div>
+        </div>
+        <div class="member-list" id="member-list"></div>
+        <div class="action-row" style="margin-top: 12px;">
+          <button type="button" id="split-btn" class="cta-button">チームで分割</button>
+          <button type="button" id="gather-btn" class="cta-button secondary">全員集合</button>
+        </div>
+      </div>
+    </section>
   </main>
 
   <script>
     (function() {
       const form = document.getElementById("vc-form");
       const statusEl = document.getElementById("vc-status");
+      const memberList = document.getElementById("member-list");
+      const teamStatus = document.getElementById("team-status");
+      const splitBtn = document.getElementById("split-btn");
+      const gatherBtn = document.getElementById("gather-btn");
+      let memberCache = {};
+      let lastFetchedAt = Date.now();
 
       async function submitForm(evt) {
         evt.preventDefault();
@@ -96,6 +119,181 @@
       }
 
       form.addEventListener("submit", submitForm);
+
+      function formatDuration(sec) {
+        const s = Number(sec);
+        const h = Math.floor(s / 3600);
+        const m = Math.floor((s % 3600) / 60);
+        const rem = Math.floor(s % 60);
+        const hh = h > 0 ? `${h}時間` : "";
+        const mm = `${m.toString().padStart(2, "0")}分`;
+        const ss = `${rem.toString().padStart(2, "0")}秒`;
+        return `${hh}${mm}${ss}`;
+      }
+
+      function renderMembers(data) {
+        memberCache = {};
+        lastFetchedAt = Date.now();
+        memberList.innerHTML = "";
+        if (!data.members || data.members.length === 0) {
+          memberList.innerHTML = '<div class="helper">現在ボイスチャンネルに接続しているメンバーはいません。</div>';
+          return;
+        }
+
+        data.members.forEach((m) => {
+          memberCache[m.id] = m;
+          const row = document.createElement("div");
+          row.className = "member-row";
+
+          const avatar = document.createElement("img");
+          avatar.className = "avatar sm";
+          avatar.src = m.avatar;
+          avatar.alt = `${m.name} avatar`;
+
+          const meta = document.createElement("div");
+          meta.className = "member-meta";
+          const title = document.createElement("div");
+          title.className = "title";
+          title.textContent = m.name;
+          const time = document.createElement("div");
+          time.className = "helper";
+          const span = document.createElement("span");
+          span.className = "time-counter";
+          span.dataset.id = m.id;
+          span.dataset.time = m.connected_seconds || 0;
+          span.dataset.base = `${lastFetchedAt}`;
+          time.textContent = "接続時間 ";
+          time.appendChild(span);
+          meta.appendChild(title);
+          meta.appendChild(time);
+
+          const teamSelect = document.createElement("select");
+          teamSelect.className = "input compact";
+          teamSelect.dataset.memberId = m.id;
+          ["", "A", "B", "C", "D"].forEach((v) => {
+            const opt = document.createElement("option");
+            opt.value = v;
+            opt.textContent = v === "" ? "チーム未設定" : `${v} チーム`;
+            if (v === (m.team || "")) opt.selected = true;
+            teamSelect.appendChild(opt);
+          });
+
+          const controls = document.createElement("div");
+          controls.className = "member-controls";
+          const muteBtn = document.createElement("button");
+          muteBtn.className = "pill control";
+          muteBtn.dataset.action = "mute";
+          muteBtn.dataset.memberId = m.id;
+          muteBtn.textContent = m.server_mute ? "ミュート解除" : "サーバーミュート";
+
+          const deafBtn = document.createElement("button");
+          deafBtn.className = "pill control";
+          deafBtn.dataset.action = "deaf";
+          deafBtn.dataset.memberId = m.id;
+          deafBtn.textContent = m.server_deaf ? "聴覚戻す" : "サーバーディスエーブル";
+
+          controls.appendChild(teamSelect);
+          controls.appendChild(muteBtn);
+          controls.appendChild(deafBtn);
+
+          row.appendChild(avatar);
+          row.appendChild(meta);
+          row.appendChild(controls);
+          memberList.appendChild(row);
+        });
+      }
+
+      async function fetchState() {
+        try {
+          const res = await fetch(`/guild/{{ guild.id }}/vc/{{ vc.id }}/state`);
+          const data = await res.json();
+          if (!res.ok || !data.ok) {
+            teamStatus.textContent = data.error || "取得失敗";
+            return;
+          }
+          renderMembers(data);
+          teamStatus.textContent = "更新済み";
+        } catch (e) {
+          teamStatus.textContent = "接続エラー";
+        }
+      }
+
+      async function updateMember(memberId, payload) {
+        const res = await fetch(`/guild/{{ guild.id }}/vc/{{ vc.id }}/member/${memberId}/update`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload)
+        });
+        return res.json();
+      }
+
+      async function handleTeamChange(ev) {
+        const memberId = ev.target.dataset.memberId;
+        const team = ev.target.value || null;
+        const res = await updateMember(memberId, { team });
+        if (!res.ok) {
+          teamStatus.textContent = res.error || "更新失敗";
+        } else {
+          teamStatus.textContent = "チームを更新しました";
+        }
+        fetchState();
+      }
+
+      async function handleControlClick(ev) {
+        const btn = ev.target.closest("button.control");
+        if (!btn) return;
+        const memberId = btn.dataset.memberId;
+        const action = btn.dataset.action;
+        const cached = memberCache[memberId];
+        const payload = {};
+        if (action === "mute") {
+          payload.mute = !cached.server_mute;
+        } else if (action === "deaf") {
+          payload.deaf = !cached.server_deaf;
+        }
+        const res = await updateMember(memberId, payload);
+        if (!res.ok) {
+          teamStatus.textContent = res.error || "権限エラー";
+        } else {
+          teamStatus.textContent = "メンバーを更新しました";
+        }
+        fetchState();
+      }
+
+      async function handleSplit(type) {
+        const endpoint = type === "split" ? "split" : "gather";
+        const res = await fetch(`/guild/{{ guild.id }}/vc/{{ vc.id }}/teams/${endpoint}`, { method: "POST" });
+        const data = await res.json();
+        if (!res.ok || !data.ok) {
+          teamStatus.textContent = data.error || "操作に失敗しました";
+          return;
+        }
+        teamStatus.textContent = type === "split" ? "チームに分割しました" : "全員を集合させました";
+        fetchState();
+      }
+
+      function tickTimers() {
+        const now = Date.now();
+        document.querySelectorAll(".time-counter").forEach((el) => {
+          const base = Number(el.dataset.time || 0);
+          const baseAt = Number(el.dataset.base || lastFetchedAt);
+          const elapsed = base + Math.max(0, Math.floor((now - baseAt) / 1000));
+          el.textContent = formatDuration(elapsed);
+        });
+      }
+
+      memberList.addEventListener("change", (ev) => {
+        if (ev.target.matches("select[data-member-id]")) {
+          handleTeamChange(ev);
+        }
+      });
+      memberList.addEventListener("click", handleControlClick);
+      splitBtn.addEventListener("click", () => handleSplit("split"));
+      gatherBtn.addEventListener("click", () => handleSplit("gather"));
+
+      fetchState();
+      setInterval(fetchState, 10000);
+      setInterval(tickTimers, 1000);
     })();
   </script>
 </body>

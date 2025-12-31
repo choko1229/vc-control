@@ -71,3 +71,21 @@ def embed_manage_panel(vc_name: str, manage_url: str, starter_name: str | None =
     return discord.Embed(
         title="VC管理パネル", description=description, color=0x5865F2
     )
+
+
+def embed_team_overview(vc_name: str, assignments: dict, starter_name: str | None = None):
+    lines = []
+    for label in ["A", "B", "C", "D"]:
+        members = assignments.get(label) or []
+        label_block = "、".join(members) if members else "-"
+        lines.append(f"{label}チーム: {label_block}")
+
+    description = "\n".join(lines)
+    description += "\n\nリアクションでチームを選択できます。"
+    description += "\n🔀 でチーム別VCへ分割、🏠 で集合します。"
+    if starter_name:
+        description += f"\n開始ユーザー: {starter_name}"
+
+    return discord.Embed(
+        title=f"{vc_name} のチーム編成", description=description, color=0x5865F2
+    )
