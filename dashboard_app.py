@@ -521,30 +521,27 @@ def create_app(bot):
             return JSONResponse({"ok": False, "error": "forbidden"}, status_code=403)
 
         target_channel = target.voice.channel if target and target.voice else None
+        if not target_channel:
+            return JSONResponse({"ok": False, "error": "member_not_in_vc"}, status_code=404)
+
         allowed_channels = {vc.id}
         if isinstance(session, dict):
             allowed_channels.update(session.get("team_channels", {}).values())
 
-        if target_channel and target_channel.id not in allowed_channels:
-            # 失われたセッション情報や再起動後でも、同カテゴリかつ元VC名の派生
-            # チャンネルは許可する（例: "{VC名}-A"）。
-            if (
-                target_channel.category
-                and target_channel.category.id == vc.category.id
-                and target_channel.name.startswith(f"{vc.name}-")
-            ) or base_session_for(target_channel) == vc.id:
-                allowed_channels.add(target_channel.id)
-                if isinstance(session, dict):
-                    session.setdefault("team_channels", {})
-                    suffix = target_channel.name[len(vc.name) + 1 :].strip()
-                    if suffix:
-                        session["team_channels"].setdefault(suffix, target_channel.id)
-            else:
-                return JSONResponse(
-                    {"ok": False, "error": "member_not_in_vc"}, status_code=404
-                )
-        elif not target_channel:
+        # 失われたセッション情報や名前変更があっても、同一カテゴリの派生VCは許可する
+        same_category = target_channel.category and target_channel.category.id == vc.category.id
+        name_matches = target_channel.name.startswith(f"{vc.name}-") if target_channel.name else False
+        base_matches = base_session_for(target_channel) == vc.id
+
+        if target_channel.id not in allowed_channels and not (same_category and (name_matches or base_matches)):
             return JSONResponse({"ok": False, "error": "member_not_in_vc"}, status_code=404)
+
+        if target_channel.id not in allowed_channels and isinstance(session, dict):
+            session.setdefault("team_channels", {})
+            if name_matches:
+                suffix = target_channel.name[len(vc.name) + 1 :].strip()
+                if suffix:
+                    session["team_channels"].setdefault(suffix, target_channel.id)
 
         payload = await request.json()
         updates = {}
