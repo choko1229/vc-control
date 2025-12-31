@@ -1,18 +1,16 @@
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
 
 :root {
-  --bg: radial-gradient(circle at 20% 20%, rgba(124, 195, 255, 0.35), transparent 30%),
-        radial-gradient(circle at 80% 0%, rgba(172, 128, 255, 0.35), transparent 30%),
-        #0b1021;
-  --surface: rgba(255, 255, 255, 0.06);
-  --surface-strong: rgba(255, 255, 255, 0.12);
-  --border: rgba(255, 255, 255, 0.08);
-  --text: #f7f9fb;
-  --muted: #b7c0d3;
-  --accent: #5ec2ff;
-  --accent-strong: #4fb0f1;
-  --success: #5de4c7;
-  --shadow: 0 12px 45px rgba(0, 0, 0, 0.45);
+  --bg: linear-gradient(180deg, #1e1f22 0%, #18191c 100%);
+  --surface: #2b2d31;
+  --surface-strong: #313338;
+  --border: #3c3f44;
+  --text: #f2f3f5;
+  --muted: #b5bac1;
+  --accent: #5865f2;
+  --accent-strong: #4752c4;
+  --success: #3ba55d;
+  --shadow: 0 12px 40px rgba(0, 0, 0, 0.35);
 }
 
 * { box-sizing: border-box; }
@@ -23,7 +21,6 @@ body {
   font-family: 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif;
   color: var(--text);
   background: var(--bg);
-  background-attachment: fixed;
 }
 
 a { color: inherit; text-decoration: none; }
@@ -35,9 +32,8 @@ header {
   padding: 18px 32px;
   position: sticky;
   top: 0;
-  background: linear-gradient(180deg, rgba(11,16,33,0.9), rgba(11,16,33,0.65));
-  backdrop-filter: blur(10px);
-  border-bottom: 1px solid var(--border);
+  background: #1f2126;
+  border-bottom: 1px solid #111218;
   z-index: 10;
 }
 
@@ -46,15 +42,15 @@ header {
   align-items: center;
   gap: 12px;
   font-weight: 700;
-  letter-spacing: 0.4px;
+  letter-spacing: 0.2px;
 }
 
 .logo-mark {
   width: 36px;
   height: 36px;
-  border-radius: 12px;
-  background: linear-gradient(135deg, #89f7fe 0%, #66a6ff 100%);
-  box-shadow: 0 8px 24px rgba(102, 166, 255, 0.35);
+  border-radius: 10px;
+  background: linear-gradient(135deg, #5865f2 0%, #4752c4 100%);
+  box-shadow: 0 10px 26px rgba(88, 101, 242, 0.45);
 }
 
 .container {
@@ -64,14 +60,14 @@ header {
 }
 
 .hero {
-  background: linear-gradient(135deg, rgba(89, 194, 255, 0.2), rgba(102, 166, 255, 0.08));
+  background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 24px;
-  padding: 32px;
+  border-radius: 18px;
+  padding: 28px;
   box-shadow: var(--shadow);
   display: grid;
   grid-template-columns: 1.2fr 1fr;
-  gap: 28px;
+  gap: 24px;
   align-items: center;
 }
 
@@ -91,16 +87,16 @@ header {
   padding: 14px 18px;
   border-radius: 14px;
   border: 1px solid transparent;
-  color: #0b1021;
-  background: linear-gradient(135deg, #89f7fe 0%, #66a6ff 100%);
+  color: #f8f9fd;
+  background: linear-gradient(135deg, var(--accent) 0%, var(--accent-strong) 100%);
   font-weight: 600;
   cursor: pointer;
   transition: transform 0.15s ease, box-shadow 0.15s ease, filter 0.15s ease;
-  box-shadow: 0 10px 30px rgba(102, 166, 255, 0.35);
+  box-shadow: 0 10px 30px rgba(88, 101, 242, 0.35);
 }
 
 .cta-button.secondary {
-  background: var(--surface);
+  background: var(--surface-strong);
   border-color: var(--border);
   color: var(--text);
   box-shadow: none;
@@ -122,12 +118,11 @@ header {
 }
 
 .card {
-  background: var(--surface);
+  background: var(--surface-strong);
   border: 1px solid var(--border);
-  border-radius: 18px;
+  border-radius: 16px;
   padding: 18px;
   box-shadow: var(--shadow);
-  backdrop-filter: blur(6px);
 }
 
 .card h3 { margin-top: 0; margin-bottom: 8px; }
@@ -154,7 +149,7 @@ header {
   gap: 8px;
   padding: 8px 10px;
   border-radius: 12px;
-  background: var(--surface-strong);
+  background: #232428;
   border: 1px solid var(--border);
   color: var(--muted);
   font-size: 13px;
@@ -216,7 +211,7 @@ header {
 }
 
 .pill {
-  background: var(--surface-strong);
+  background: #25262b;
   border: 1px solid var(--border);
   border-radius: 12px;
   padding: 8px 12px;
@@ -230,7 +225,7 @@ header {
   color: var(--muted);
   border: 1px dashed var(--border);
   border-radius: 14px;
-  background: rgba(255, 255, 255, 0.04);
+  background: #232428;
 }
 
 .form-grid {
