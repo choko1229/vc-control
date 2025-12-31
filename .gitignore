@@ -1,2 +1,3 @@
 settings.json
-settings.py
+vc_sessions.db
+utils/vc_sessions.db
