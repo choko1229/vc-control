@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="page-hero">
+  <h2>Discord ログイン</h2>
+  <p>Bot Owner はアドミン画面へ、VC参加者は自分の通話管理画面へ進めます。</p>
+</section>
+<article class="card">
+  {% if error %}
+    <div class="alert">{{ error }}</div>
+  {% endif %}
+  {% if request.query_params.get('setup') %}
+    <div class="alert">セットアップを保存しました。Bot を利用する前に一度再起動してください。</div>
+  {% endif %}
+  <div class="panel-actions">
+    <a href="/auth/login" class="button">Discordでログイン</a>
+  </div>
+</article>
+{% endblock %}

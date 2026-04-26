@@ -1,127 +1,267 @@
-# 🎧 Discord VC Notification Bot
+# VC Control
 
-Discordサーバー内のボイスチャンネル(VC)の状態を監視し、  
-**入退室通知・メンションDM通知・VC開始/終了サマリ通知** を自動で行う多機能Botです。
+Discord サーバー向けのボイスチャンネル管理 Bot です。  
+`Discord Bot + Web管理画面 + SQLite(config/stats分離)` を前提に、VC 自動作成・削除・通知・チーム分け・統計表示・OAuth ログインをまとめて扱います。
 
----
+## 1. 全体設計
 
-## 🚀 主な機能
+### アーキテクチャ
 
-### 🎙 VC入退室通知
-- 各VCのテキスト欄にEmbed形式で入退室を自動通知  
-- デザイン：
-  - 入室 → 緑色（`0x2ECC71`）
-  - 退室 → 赤色（`0xE74C3C`）  
-- ユーザーの表示名・アイコンを表示  
-- 例：
-  ```
-  {ユーザー名} がボイスチャンネルに接続しました。
-  ```
+- `main.py`
+  - DB 初期化
+  - ログ初期化
+  - 設定ロード
+  - Web 起動
+  - セットアップ済みなら Discord Bot も同時起動
+- `config.db`
+  - Bot 基本設定
+  - OAuth 設定
+  - サーバー別設定
+  - 暗号化済み秘密情報
+  - セッション復元用スナップショット
+  - エラーログ
+- `stats.db`
+  - VC セッション履歴
+  - ユーザー別通話時間
+  - AFK 時間
+  - 日別/時間帯別ロールアップ
+  - ランキング集計
+- `SessionManager`
+  - VC 自動作成
+  - 入退室イベント処理
+  - 空室削除タイマー
+  - セッション開始/終了
+  - AFK 集計
+  - チーム VC 管理
+  - WebSocket 更新
+- `FastAPI`
+  - 初回セットアップ画面
+  - Discord OAuth2 ログイン
+  - 通常 VC 管理画面
+  - Bot Owner 専用アドミン画面
+  - `/ws` によるリアルタイム更新
 
----
+### 保守方針
 
-### 📢 VC開始・終了サマリ通知（通知チャンネル機能）
-- `NOTICE_CHANNEL_ID` で指定したチャンネルに、VCの開始／終了情報をEmbed送信
+- 設定 DB と統計 DB を明確に分離
+- DB 操作は repository 層へ隔離
+- Bot イベント本体は薄くし、実処理は `SessionManager` に集約
+- UI と API を分離し、Web 管理画面は将来 React 等へ差し替えやすい構成
+- 秘密情報は `data/secret.key` による Fernet 暗号化保存
 
-#### ✅ VC開始（最初の入室時）
-- 緑色Embed
-- タイトル：`{ユーザー}がVCを開始しました。`
-- 内容：
-  ```
-  VC開始時刻：{何月何日 17:00} (<t:UNIXTIME:R>)
-  ```
-- 送信者アイコン付き  
+## 2. ディレクトリ構成
 
-#### 🔴 VC終了（最後の退出時）
-- 前回の「開始」Embedを削除し、新たに赤色Embedで通知
-- 内容：
-  ```
-  VC開始時刻：{開始時間}
-  VC終了時刻：{終了時間}
-  VC継続時間：{何時間何分何秒}
-  参加したユーザー：
-    - ユーザーA（参加時間: 1時間12分30秒）
-    - ユーザーB（参加時間: 25分30秒）
-  ```
-- 参加時間は入退室を複数回繰り返しても自動で累積計算
+```text
+vc-control/
+├─ main.py
+├─ requirements.txt
+├─ README.md
+├─ data/
+│  └─ .gitkeep
+└─ vc_control/
+   ├─ __init__.py
+   ├─ bootstrap.py
+   ├─ bot.py
+   ├─ logging_utils.py
+   ├─ models.py
+   ├─ repositories.py
+   ├─ runtime.py
+   ├─ security.py
+   ├─ team_ui.py
+   ├─ utils.py
+   ├─ web.py
+   ├─ static/
+   │  ├─ app.js
+   │  └─ style.css
+   └─ templates/
+      ├─ admin.html
+      ├─ base.html
+      ├─ dashboard.html
+      ├─ login.html
+      ├─ rankings.html
+      ├─ setup.html
+      ├─ stats_me.html
+      └─ voice.html
+```
 
----
+## 3. 必要ライブラリ
 
-### 💬 VCテキストでの @メンション → DM通知
-- VCのテキストメッセージ欄でユーザーをメンションすると、自動的にDMを送信
-- DM内容：
-  - タイトル：`🔔 {メンションしたユーザー}がVCであなたを呼んでいます。`
-  - 本文：`{VC名} であなたをメンションしました。`
-  - メッセージ内容（メンション以外の本文がある場合）
-  - メッセージへのジャンプリンク  
-- `@everyone` / `@here` はDM送信されず、VCに警告メッセージを表示
+- `discord.py`
+- `fastapi`
+- `uvicorn[standard]`
+- `aiosqlite`
+- `cryptography`
+- `httpx`
+- `jinja2`
 
----
+インストール例:
 
-### 🕒 無人VCの自動削除
-- 誰もいなくなったVCを一定時間後に自動削除  
-- デフォルト：
-  - 10秒後：「全員が退出しました」通知
-  - さらに20秒後：チャンネル削除  
+```bash
+pip install -r requirements.txt
+```
 
----
+## 4. 各ファイルのコード
 
-## 🧠 技術仕様
+各ファイルのフルコードはリポジトリ内に配置済みです。主要ファイルは以下です。
 
-| 機能 | イベント | 送信先 | 色 | 内容 |
-|------|-----------|--------|----|------|
-| 入室通知 | `on_voice_state_update` | VCテキスト欄 | 緑 | {ユーザー}が接続しました。 |
-| 退室通知 | `on_voice_state_update` | VCテキスト欄 | 赤 | {ユーザー}が切断しました。 |
-| VC開始 | 最初の入室時 | 通知チャンネル | 緑 | 開始時刻＋相対時刻表示 |
-| VC終了 | 最後の退出時 | 通知チャンネル | 赤 | 開始/終了/継続時間＋参加者一覧 |
-| メンションDM | `on_message` | DM | 青 | メンション情報＋リンク |
-| 無人削除 | 一定時間後 | - | - | VC削除 |
+- `main.py`: 起動エントリポイント
+- `vc_control/runtime.py`: VC 管理・セッション・AFK・WebSocket 中核
+- `vc_control/web.py`: セットアップ/OAuth/Web UI/API
+- `vc_control/bot.py`: Discord Bot 本体
+- `vc_control/team_ui.py`: `/team` のボタン/セレクト/モーダル
+- `vc_control/repositories.py`: `config.db` / `stats.db` 操作
 
----
+## 5. DB スキーマ
 
-## 🧩 実装構成
+### `data/config.db`
 
-- **Python 3.10+**（Python 3.13 では標準ライブラリの `audioop` が削除されたため、本リポジトリ同梱の互換モジュールで動作します）
-- **Pycord 2.x**
-- `settings.json` に各種IDとトークンを指定
-- Embedベース通知（タイトル／説明／アイコン／相対時刻対応）
-- JST(日本標準時)および `<t:UNIXTIME:R>` 相対時刻表記対応
-- メモリ上でセッション管理（参加者ごとの入退室・滞在時間）
-- VC開始時の管理リンクEmbed送信と、Web管理パネルでのVC設定変更（VC名/最大人数/ビットレート）
+- `app_settings`
+  - `client_id`
+  - `redirect_uri`
+  - `base_url`
+  - `owner_user_id`
+  - `dashboard_host`
+  - `dashboard_port`
+  - `setup_completed`
+- `secure_settings`
+  - `bot_token`
+  - `client_secret`
+  - `session_secret`
+- `guild_settings`
+  - `guild_id`
+  - `guild_name`
+  - `managed_category_id`
+  - `base_voice_channel_id`
+  - `notification_channel_id`
+  - `first_empty_notice_sec`
+  - `final_delete_sec`
+  - `team_mode`
+  - `team_names_json`
+  - `enabled`
+- `session_snapshots`
+  - Bot 再起動時のセッション復元用
+- `error_logs`
+  - `created_at`
+  - `level`
+  - `source`
+  - `message`
+  - `detail`
 
----
+### `data/stats.db`
 
-## 🧾 ライセンス
-このソフトウェアは [MIT License](LICENSE) のもとで公開されています。
+- `vc_sessions`
+  - セッション開始/終了と要約
+- `session_members`
+  - セッション参加者ごとの通話/AFK 実績
+- `user_totals`
+  - ユーザー別累計
+- `daily_user_stats`
+  - 日別通話/AFK ロールアップ
+- `hourly_user_stats`
+  - 時間帯別ロールアップ
 
----
+## 6. 初回セットアップ手順
 
-## ⚙️ セットアップ
+1. Discord Developer Portal で Bot を作成する
+2. このリポジトリで依存関係をインストールする
+3. `SETUP_PASSWORD` を環境変数で設定する
+4. `python main.py` で起動する
+5. ブラウザで `http://127.0.0.1:8000/setup` を開く
+6. 以下を入力して保存する
+   - Bot Token
+   - Discord Client ID
+   - Discord Client Secret
+   - Discord Redirect URI
+   - Dashboard Base URL
+   - Bot Owner Discord User ID
+   - Dashboard Host / Port
+7. 一度プロセスを再起動する
+8. `http://127.0.0.1:8000/login` から Discord OAuth2 ログインする
+9. Bot Owner でログイン後、`/admin` からサーバー別設定を行う
 
-1. `settings-template.json` を `settings.json` にコピーします。
-2. 下記の値を埋めてください（すべて必須）。
-   - `TOKEN`: Discord Bot のトークン
-   - `BASE_VC_ID`: 基本となる待機VCのID
-   - `VC_CATEGORY_ID`: VCをまとめるカテゴリのID
-   - `NOTICE_CHANNEL_ID`: VC開始/終了サマリを投稿するテキストチャンネルID
-   - `DASHBOARD_BASE_URL`: ダッシュボードを公開しているホスト（管理リンクEmbedで使用）
-   - `FIRST_EMPTY_NOTICE_SEC` / `FINAL_DELETE_SEC`: 無人VCの削除までの秒数
-   - `DISCORD_CLIENT_ID` / `DISCORD_CLIENT_SECRET` / `DISCORD_REDIRECT_URI`: ダッシュボード用のDiscord OAuth2情報
-   - `DASHBOARD_SESSION_SECRET`: ダッシュボードのセッション暗号化キー（適当なランダム文字列）
-3. `settings.json` は秘匿情報のためリポジトリには含めないでください（`.gitignore` で除外済み）。
+## 7. 起動コマンド
 
----
+### PowerShell
 
-## 💡 今後の拡張予定
-- セッション履歴の永続化（JSON / SQLite）
-- 週ごとのVC利用統計レポート
-- VC稼働ランキング機能
-- Webダッシュボード連携
-- 管理コマンド（例：`!vcstats`）
+```powershell
+$env:SETUP_PASSWORD = "your-setup-password"
+python main.py
+```
 
----
+### 初回セットアップ後の再起動
 
-## 👤 作者
-**choko1229**  
-- Discord Bot開発 / サーバー自動化 / Webシステム構築  
-- Website: [https://choko1229.net](https://choko1229.net)
+```powershell
+python main.py
+```
+
+## 8. Discord 側で必要な設定
+
+### Bot Intents
+
+Developer Portal の Bot タブで以下を有効化してください。
+
+- `SERVER MEMBERS INTENT`
+- `MESSAGE CONTENT INTENT`
+- `GUILD PRESENCES` は不要
+
+コード上で使用している主な Intent:
+
+- `guilds`
+- `members`
+- `voice_states`
+- `messages`
+- `message_content`
+
+### Bot に必要な権限
+
+最低限、以下を推奨します。
+
+- `View Channels`
+- `Manage Channels`
+- `Move Members`
+- `Mute Members`
+- `Deafen Members`
+- `Send Messages`
+- `Embed Links`
+- `Read Message History`
+- `Mention Everyone` は不要
+
+### OAuth2 Redirect URI
+
+Developer Portal の OAuth2 設定へ、セットアップ画面で入力するものと同じ URI を登録してください。
+
+例:
+
+```text
+http://127.0.0.1:8000/auth/callback
+```
+
+### OAuth2 URL で Bot を招待する際の推奨 Scope
+
+- `bot`
+- `applications.commands`
+
+## 9. 動作確認チェックリスト
+
+- `SETUP_PASSWORD` を設定して `/setup` が開ける
+- セットアップ後に `/setup` が無効化される
+- Bot Owner だけが `/admin` を開ける
+- 基点 VC 入室で `{表示名}のVC` が自動作成または再利用される
+- 管理対象カテゴリ内 VC の入退室通知が Voice Channel テキスト欄へ出る
+- 空室 VC で削除予告と最終削除が動く
+- 再入室で削除キャンセルが出る
+- `/team` でパネル表示、自己割当、他者割当、分割、集合、呼び戻しができる
+- チーム VC が `{元VC名}-{チーム名}` で作成される
+- Bot 再起動後に進行中セッションが復元される
+- `/dashboard/me` にアクセスできる
+- `/dashboard/voice/{guild_id}/{root_channel_id}` で VC 状態が見られる
+- `/dashboard/stats/me` に日別バー、時間帯ヒートマップ、通話 vs AFK 比率が出る
+- `/dashboard/rankings` に全体/サーバー別ランキングが出る
+- `config.db` と `stats.db` が別ファイルで作成される
+- `error_logs` に例外ログが保存される
+
+## 補足
+
+- 設定変更のうち `Bot Token` / `Client Secret` / `Client ID` / Redirect URI の反映は再起動前提です。
+- `settings.json` は使っていません。
+- 将来 MySQL へ寄せる場合は `repositories.py` を差し替える構成を想定しています。

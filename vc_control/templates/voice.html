@@ -1,0 +1,123 @@
+{% extends "base.html" %}
+{% set page_name = "voice" %}
+{% set guild_id = session.guild_id %}
+{% set root_channel_id = session.root_channel_id %}
+{% block content %}
+<section class="page-hero">
+  <h2>VC管理</h2>
+  <p>{{ session.guild_name }} / {{ session.root_channel_name }} のライブ状態です。WebSocketでリアルタイム更新されます。</p>
+</section>
+
+<div class="alert" data-notice>操作結果やエラーはここに表示されます。</div>
+
+<div class="grid cols-2" style="margin-top:18px;">
+  <article class="card">
+    <h3>セッション情報</h3>
+    <div class="chips">
+      <span class="chip ok">開始ユーザー: {{ session.owner_user_name }}</span>
+      <span class="chip">チーム: {{ session.team_names | join(', ') }}</span>
+    </div>
+    <div class="footer-note">開始時刻: {{ session.started_at }}</div>
+    {% if can_edit %}
+      <form data-voice-settings>
+        <label>VC名
+          <input type="text" name="name" value="{{ session.root_channel_name }}">
+        </label>
+        <label>最大人数
+          <input type="number" name="user_limit" value="{{ voice_channel.user_limit if voice_channel else 0 }}">
+        </label>
+        <label>ビットレート (bps)
+          <input type="number" name="bitrate" value="{{ voice_channel.bitrate if voice_channel else 64000 }}">
+        </label>
+        <button type="submit">VC設定を更新</button>
+      </form>
+      <form data-member-state>
+        <label>対象ユーザー
+          <select name="user_id">
+            <option value="">対象なし</option>
+          </select>
+        </label>
+        <label>操作
+          <select name="action">
+            <option value="mute_on">サーバーミュートON</option>
+            <option value="mute_off">サーバーミュートOFF</option>
+            <option value="deafen_on">サーバーデafenON</option>
+            <option value="deafen_off">サーバーデafenOFF</option>
+          </select>
+        </label>
+        <button type="submit" class="secondary">メンバー状態を変更</button>
+      </form>
+    {% else %}
+      <p class="muted">この画面では閲覧のみ可能です。設定変更は開始ユーザーまたはサーバー管理者のみ行えます。</p>
+    {% endif %}
+  </article>
+
+  <article class="card">
+    <h3>チーム操作</h3>
+    {% if can_edit %}
+      <div class="panel-actions">
+        <button type="button" data-action="split">分割</button>
+        <button type="button" data-action="assemble">集合</button>
+      </div>
+      <div class="stack" style="margin-top:14px;">
+        <form data-team-assign>
+          <label>対象ユーザー
+            <select name="user_id">
+              <option value="">対象なし</option>
+            </select>
+          </label>
+          <label>チーム
+            <select name="team_name">
+              <option value="">未所属</option>
+              {% for team_name in session.team_names %}
+                <option value="{{ team_name }}">{{ team_name }}</option>
+              {% endfor %}
+            </select>
+          </label>
+          <button type="submit">チーム割り当て</button>
+        </form>
+        <form data-recall-form>
+          <label>呼び戻すユーザー
+            <select name="user_id">
+              <option value="">対象なし</option>
+            </select>
+          </label>
+          <button type="submit">呼び戻す</button>
+        </form>
+      </div>
+    {% else %}
+      <p class="muted">このセクションは開始ユーザーまたはサーバー管理者のみ操作できます。</p>
+    {% endif %}
+    <div class="footer-note">自分のチーム変更は Discord の `/team` パネルからも操作できます。</div>
+  </article>
+</div>
+
+<div class="grid cols-2" style="margin-top:18px;">
+  <article class="card">
+    <h3>参加者一覧</h3>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>ユーザー</th>
+            <th>現在位置</th>
+            <th>チーム</th>
+            <th>通話時間</th>
+            <th>AFK時間</th>
+          </tr>
+        </thead>
+        <tbody data-participants>
+          <tr><td colspan="5">読込中...</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </article>
+
+  <article class="card">
+    <h3>チーム状態</h3>
+    <div class="chips" data-team-state>
+      <span class="muted">読込中...</span>
+    </div>
+  </article>
+</div>
+{% endblock %}

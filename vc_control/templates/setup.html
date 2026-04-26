@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% set page_name = "setup" %}
+{% block content %}
+<section class="page-hero">
+  <h2>初回セットアップ</h2>
+  <p>`SETUP_PASSWORD` で保護された初期設定画面です。完了後、再アクセスは無効になります。</p>
+</section>
+<div class="grid cols-2">
+  <article class="card">
+    <h3>基本情報</h3>
+    <form method="post" action="/setup">
+      <label>セットアップパスワード
+        <input type="password" name="setup_password" required>
+      </label>
+      <label>Bot Token
+        <input type="password" name="bot_token" required>
+      </label>
+      <label>Discord Client ID
+        <input type="text" name="client_id" required>
+      </label>
+      <label>Discord Client Secret
+        <input type="password" name="client_secret" required>
+      </label>
+      <label>Discord Redirect URI
+        <input type="url" name="redirect_uri" placeholder="http://127.0.0.1:8000/auth/callback" required>
+      </label>
+      <label>Dashboard Base URL
+        <input type="url" name="base_url" placeholder="http://127.0.0.1:8000" required>
+      </label>
+      <label>Bot Owner Discord User ID
+        <input type="text" name="owner_user_id" required>
+      </label>
+      <label>Dashboard Host
+        <input type="text" name="dashboard_host" value="127.0.0.1" required>
+      </label>
+      <label>Dashboard Port
+        <input type="number" name="dashboard_port" value="8000" required>
+      </label>
+      <button type="submit">セットアップを保存</button>
+    </form>
+  </article>
+  <article class="card">
+    <h3>注意事項</h3>
+    <div class="stack">
+      <div class="alert">セットアップ完了後、Bot Token と Client Secret は `data/secret.key` を用いて暗号化して保存されます。</div>
+      <div class="alert">初回保存後は `/setup` へ直接アクセスしても開けません。</div>
+      <div class="alert">Bot 起動反映は再起動前提です。セットアップ直後は一度プロセスを再起動してください。</div>
+    </div>
+  </article>
+</div>
+{% endblock %}

@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="page-hero">
+  <h2>ランキング</h2>
+  <p>サーバー別ランキングと全体ランキングを同じ画面で切り替えます。</p>
+</section>
+
+<article class="card">
+  <form method="get" action="/dashboard/rankings" class="inline">
+    <label>表示期間
+      <select name="period">
+        {% for key, label in [("day","当日"),("week","1週間"),("month","1か月"),("year","1年"),("all","全期間")] %}
+          <option value="{{ key }}" {% if period == key %}selected{% endif %}>{{ label }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>サーバー
+      <select name="guild_id">
+        <option value="">全体</option>
+        {% for guild in known_guilds %}
+          <option value="{{ guild.guild_id }}" {% if selected_guild_id == guild.guild_id %}selected{% endif %}>{{ guild.guild_name }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <button type="submit">反映</button>
+  </form>
+</article>
+
+<article class="card" style="margin-top:18px;">
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>順位</th>
+          <th>ユーザー</th>
+          <th>サーバー</th>
+          <th>通話時間</th>
+          <th>AFK時間</th>
+          <th>実質通話時間</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in rankings %}
+          <tr>
+            <td>{{ row.rank }}</td>
+            <td>{{ row.user_name }}</td>
+            <td>{{ row.guild_name }}</td>
+            <td>{{ format_duration(row.talk_seconds) }}</td>
+            <td>{{ format_duration(row.afk_seconds) }}</td>
+            <td>{{ format_duration(row.effective_seconds) }}</td>
+          </tr>
+        {% else %}
+          <tr>
+            <td colspan="6">ランキング対象データがありません。</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</article>
+{% endblock %}

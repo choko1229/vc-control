@@ -1,66 +1,82 @@
-# main.py
+from __future__ import annotations
 
 import asyncio
-import discord
-from discord.ext import commands
+import os
+from pathlib import Path
+
 import uvicorn
 
-import settings
-from dashboard_app import create_app
+from vc_control.bootstrap import AppContainer
+from vc_control.bot import build_bot
+from vc_control.logging_utils import DatabaseLogHandler, configure_logging
+from vc_control.repositories import ConfigRepository, StatsRepository
+from vc_control.runtime import SessionManager, WebSocketHub
+from vc_control.security import SecretBox
+from vc_control.web import create_app
 
 
-intents = discord.Intents.default()
-intents.guilds = True
-intents.voice_states = True
-intents.message_content = True
+async def async_main() -> None:
+    root_dir = Path(__file__).resolve().parent
+    data_dir = root_dir / "data"
+    logger = configure_logging(data_dir / "app.log")
 
-bot = commands.Bot(command_prefix="!", intents=intents)
-
-
-def load_cogs_sync():
-    print("[INFO] Loading Cogs...")
-    bot.load_extension("cogs.presence")
-    bot.load_extension("cogs.vc_manager")
-    bot.load_extension("cogs.vc_notice")
-    bot.load_extension("cogs.vc_team")
-    bot.load_extension("cogs.dm_forward")
-    bot.load_extension("cogs.cleaner")
-    print("[INFO] Cogs Loaded Successfully.")
-
-
-async def start_bot():
-    await bot.start(settings.TOKEN)
-
-
-async def start_dashboard():
-    # create_app → DashboardState を持った FastAPI を返す
-    app = create_app(bot)
-
-    # DashboardState を Bot 側へセット
-    bot.dashboard = app.state.dashboard_state
-
-    config = uvicorn.Config(
-        app,
-        host="0.0.0.0",
-        port=49162,
-        log_level="info"
+    secret_box = SecretBox(data_dir / "secret.key")
+    config_repo = ConfigRepository(data_dir / "config.db", secret_box)
+    stats_repo = StatsRepository(data_dir / "stats.db")
+    websocket_hub = WebSocketHub()
+    session_manager = SessionManager(config_repo=config_repo, stats_repo=stats_repo, websocket_hub=websocket_hub, logger=logger)
+    container = AppContainer(
+        root_dir=root_dir,
+        data_dir=data_dir,
+        config_repo=config_repo,
+        stats_repo=stats_repo,
+        websocket_hub=websocket_hub,
+        session_manager=session_manager,
+        logger=logger,
     )
-    server = uvicorn.Server(config)
 
-    await server.serve()
+    await config_repo.initialize()
+    await stats_repo.initialize()
 
+    db_handler = DatabaseLogHandler()
+    db_handler.bind(config_repo)
+    logger.addHandler(db_handler)
 
-async def main_async():
-    load_cogs_sync()
-    await asyncio.gather(start_bot(), start_dashboard())
+    settings = await config_repo.get_runtime_settings()
+    if settings.get("session_secret"):
+        os.environ["SESSION_SECRET_FALLBACK"] = settings["session_secret"]
 
+    host = settings.get("dashboard_host") or "127.0.0.1"
+    port = int(settings.get("dashboard_port") or 8000)
+    app = create_app(container)
 
-def main():
+    server = uvicorn.Server(
+        uvicorn.Config(
+            app=app,
+            host=host,
+            port=port,
+            log_config=None,
+            access_log=False,
+            loop="asyncio",
+        )
+    )
+
+    tasks: list[asyncio.Task[None]] = [asyncio.create_task(server.serve())]
+
+    if await config_repo.is_setup_complete() and settings.get("bot_token"):
+        bot = build_bot(session_manager, logger)
+        container.bot = bot
+        tasks.append(asyncio.create_task(bot.start(settings["bot_token"])))
+        logger.info("WebサーバーとDiscord Botを起動します: %s:%s", host, port)
+    else:
+        logger.info("初回セットアップモードでWebサーバーのみ起動します: %s:%s", host, port)
+
     try:
-        asyncio.run(main_async())
-    except KeyboardInterrupt:
-        print("Shutting down...")
+        await asyncio.gather(*tasks)
+    finally:
+        if container.bot is not None and not container.bot.is_closed():
+            await container.bot.close()
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(async_main())

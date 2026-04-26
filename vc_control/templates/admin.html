@@ -1,0 +1,161 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="page-hero">
+  <h2>アドミン管理</h2>
+  <p>Bot Owner 専用画面です。設定DB・統計DBの状態をまとめて管理します。</p>
+</section>
+
+<div class="grid cols-2">
+  <article class="card">
+    <h3>Bot / OAuth 設定</h3>
+    <form method="post" action="/admin/settings">
+      <label>Bot Token
+        <input type="password" name="bot_token" placeholder="変更しない場合は空欄">
+      </label>
+      <label>Discord Client ID
+        <input type="text" name="client_id" value="{{ settings.client_id }}">
+      </label>
+      <label>Discord Client Secret
+        <input type="password" name="client_secret" placeholder="変更しない場合は空欄">
+      </label>
+      <label>Discord Redirect URI
+        <input type="url" name="redirect_uri" value="{{ settings.redirect_uri }}">
+      </label>
+      <label>Dashboard Base URL
+        <input type="url" name="base_url" value="{{ settings.base_url }}">
+      </label>
+      <label>Bot Owner Discord User ID
+        <input type="text" name="owner_user_id" value="{{ settings.owner_user_id }}">
+      </label>
+      <label>Dashboard Host
+        <input type="text" name="dashboard_host" value="{{ settings.dashboard_host }}">
+      </label>
+      <label>Dashboard Port
+        <input type="number" name="dashboard_port" value="{{ settings.dashboard_port }}">
+      </label>
+      <button type="submit">基本設定を保存</button>
+    </form>
+    <div class="footer-note">Bot Token / Client Secret の反映は再起動前提です。</div>
+  </article>
+
+  <article class="card">
+    <h3>サーバー別設定</h3>
+    <form method="get" action="/admin" class="inline">
+      <label>対象サーバー
+        <select name="guild_id">
+          {% for guild in bot_guilds %}
+            <option value="{{ guild.id }}" {% if selected_guild_id == guild.id %}selected{% endif %}>{{ guild.name }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <button type="submit" class="secondary">切替</button>
+    </form>
+    {% if selected_guild_id %}
+      <form method="post" action="/admin/guilds/{{ selected_guild_id }}">
+        <label>
+          <input type="checkbox" name="enabled" {% if selected_config and selected_config.enabled %}checked{% endif %}>
+          管理対象として有効化
+        </label>
+        <label>管理カテゴリ
+          <select name="managed_category_id">
+            <option value="">未設定</option>
+            {% for channel in channel_catalog.categories %}
+              <option value="{{ channel.id }}" {% if selected_config and selected_config.managed_category_id == channel.id %}selected{% endif %}>{{ channel.name }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <label>基点VC
+          <select name="base_voice_channel_id">
+            <option value="">未設定</option>
+            {% for channel in channel_catalog.voice_channels %}
+              <option value="{{ channel.id }}" {% if selected_config and selected_config.base_voice_channel_id == channel.id %}selected{% endif %}>{{ channel.name }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <label>通知チャンネル
+          <select name="notification_channel_id">
+            <option value="">未設定</option>
+            {% for channel in channel_catalog.text_channels %}
+              <option value="{{ channel.id }}" {% if selected_config and selected_config.notification_channel_id == channel.id %}selected{% endif %}>{{ channel.name }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <label>空室後の削除予告秒数
+          <input type="number" name="first_empty_notice_sec" value="{{ selected_config.first_empty_notice_sec if selected_config else 30 }}">
+        </label>
+        <label>最終削除秒数
+          <input type="number" name="final_delete_sec" value="{{ selected_config.final_delete_sec if selected_config else 90 }}">
+        </label>
+        <label>チーム初期モード
+          <input type="text" name="team_mode" value="{{ selected_config.team_mode if selected_config else 'custom' }}">
+        </label>
+        <label>チーム初期名 (カンマ区切り)
+          <input type="text" name="team_names" value="{{ selected_config.team_names | join(',') if selected_config else 'A,B,C,D' }}">
+        </label>
+        <button type="submit">サーバー設定を保存</button>
+      </form>
+    {% else %}
+      <p class="muted">Bot が参加しているサーバーがありません。</p>
+    {% endif %}
+  </article>
+</div>
+
+<div class="grid cols-2" style="margin-top:18px;">
+  <article class="card">
+    <h3>最近のセッション履歴</h3>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>終了日時</th>
+            <th>サーバー</th>
+            <th>VC名</th>
+            <th>通話時間</th>
+            <th>AFK時間</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in recent_sessions %}
+            <tr>
+              <td>{{ row.ended_at }}</td>
+              <td>{{ row.guild_name }}</td>
+              <td>{{ row.root_channel_name }}</td>
+              <td>{{ format_duration(row.total_talk_seconds) }}</td>
+              <td>{{ format_duration(row.total_afk_seconds) }}</td>
+            </tr>
+          {% else %}
+            <tr><td colspan="5">セッション履歴はありません。</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </article>
+
+  <article class="card">
+    <h3>エラーログ</h3>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>日時</th>
+            <th>ソース</th>
+            <th>メッセージ</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in error_logs %}
+            <tr>
+              <td>{{ row.created_at }}</td>
+              <td>{{ row.source }}</td>
+              <td>{{ row.message }}</td>
+            </tr>
+          {% else %}
+            <tr><td colspan="3">エラーログはありません。</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    <div class="footer-note">総件数: {{ total_logs }} 件 / ページ: {{ page }}</div>
+  </article>
+</div>
+{% endblock %}

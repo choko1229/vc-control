@@ -1,0 +1,82 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="page-hero">
+  <h2>マイダッシュボード</h2>
+  <p>{{ current_user.display_name }} さんがアクセス可能なVCセッションと、自分の通話統計を表示しています。</p>
+</section>
+
+<section class="summary">
+  <article class="metric">
+    <span>累計通話時間</span>
+    <strong>{{ format_duration(summary.talk_seconds) }}</strong>
+  </article>
+  <article class="metric">
+    <span>累計AFK時間</span>
+    <strong>{{ format_duration(summary.afk_seconds) }}</strong>
+  </article>
+  <article class="metric">
+    <span>実質通話時間</span>
+    <strong>{{ format_duration(summary.effective_seconds) }}</strong>
+  </article>
+</section>
+
+<div class="grid cols-2" style="margin-top:18px;">
+  <article class="card">
+    <h3>現在アクセス可能なVC</h3>
+    {% if sessions %}
+      <div class="stack">
+        {% for session in sessions %}
+          <div class="card" style="padding:16px;">
+            <div class="inline">
+              <strong>{{ session.guild_name }}</strong>
+              <span class="chip ok">{{ session.root_channel_name }}</span>
+              {% if session.can_edit %}
+                <span class="chip">編集可</span>
+              {% else %}
+                <span class="chip warn">閲覧のみ</span>
+              {% endif %}
+            </div>
+            <div class="muted">開始ユーザー: {{ session.owner_user_name }}</div>
+            <a href="/dashboard/voice/{{ session.guild_id }}/{{ session.root_channel_id }}">VC管理画面を開く</a>
+          </div>
+        {% endfor %}
+      </div>
+    {% else %}
+      <p class="muted">現在アクセス可能なVCセッションはありません。</p>
+    {% endif %}
+    {% if is_admin %}
+      <div class="footer-note"><a href="/admin">Bot Owner 向けアドミン画面を開く</a></div>
+    {% endif %}
+  </article>
+
+  <article class="card">
+    <h3>サーバー別内訳</h3>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>サーバー</th>
+            <th>通話</th>
+            <th>AFK</th>
+            <th>実質</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in guild_breakdown %}
+            <tr>
+              <td>{{ row.guild_name }}</td>
+              <td>{{ format_duration(row.talk_seconds) }}</td>
+              <td>{{ format_duration(row.afk_seconds) }}</td>
+              <td>{{ format_duration(row.effective_seconds) }}</td>
+            </tr>
+          {% else %}
+            <tr>
+              <td colspan="4">まだ統計データがありません。</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </article>
+</div>
+{% endblock %}

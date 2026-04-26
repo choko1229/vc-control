@@ -1,0 +1,138 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="page-hero">
+  <h2>自分の通話時間</h2>
+  <p>期間は表のみ切り替えできます。グラフはサーバー別フィルタ付きの固定表示です。</p>
+</section>
+
+<article class="card">
+  <form method="get" action="/dashboard/stats/me" class="inline">
+    <label>表示期間
+      <select name="period">
+        {% for key, label in [("day","当日"),("week","1週間"),("month","1か月"),("year","1年"),("all","全期間")] %}
+          <option value="{{ key }}" {% if period == key %}selected{% endif %}>{{ label }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>サーバー
+      <select name="guild_id">
+        <option value="">全サーバー</option>
+        {% for guild in known_guilds %}
+          <option value="{{ guild.guild_id }}" {% if selected_guild_id == guild.guild_id %}selected{% endif %}>{{ guild.guild_name }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <button type="submit">反映</button>
+  </form>
+</article>
+
+<section class="summary" style="margin-top:18px;">
+  <article class="metric">
+    <span>通話時間</span>
+    <strong>{{ format_duration(summary.talk_seconds) }}</strong>
+  </article>
+  <article class="metric">
+    <span>AFK時間</span>
+    <strong>{{ format_duration(summary.afk_seconds) }}</strong>
+  </article>
+  <article class="metric">
+    <span>実質通話時間</span>
+    <strong>{{ format_duration(summary.effective_seconds) }}</strong>
+  </article>
+</section>
+
+<div class="grid cols-2" style="margin-top:18px;">
+  <article class="card">
+    <h3>日別通話時間</h3>
+    <div class="chart-bars">
+      {% set namespace = namespace(max_talk=1) %}
+      {% for row in daily_chart %}
+        {% if row.talk_seconds > namespace.max_talk %}
+          {% set namespace.max_talk = row.talk_seconds %}
+        {% endif %}
+      {% endfor %}
+      {% for row in daily_chart %}
+        <div class="bar-row">
+          <span>{{ row.date }}</span>
+          <div class="bar" style="width: {{ ((row.talk_seconds / namespace.max_talk) * 100) | round(2) }}%;"></div>
+          <strong>{{ format_duration(row.talk_seconds) }}</strong>
+        </div>
+      {% else %}
+        <p class="muted">表示できる日別データがありません。</p>
+      {% endfor %}
+    </div>
+  </article>
+
+  <article class="card">
+    <h3>通話時間 vs AFK時間</h3>
+    {% set total = summary.talk_seconds if summary.talk_seconds else 1 %}
+    <div class="ratio">
+      <div class="ratio-track">
+        <div class="ratio-talk" style="width: {{ ((summary.effective_seconds / total) * 100) | round(2) }}%"></div>
+        <div class="ratio-afk" style="width: {{ ((summary.afk_seconds / total) * 100) | round(2) }}%"></div>
+      </div>
+      <div class="inline">
+        <span class="chip ok">実質 {{ format_duration(summary.effective_seconds) }}</span>
+        <span class="chip warn">AFK {{ format_duration(summary.afk_seconds) }}</span>
+      </div>
+    </div>
+  </article>
+</div>
+
+<div class="grid cols-2" style="margin-top:18px;">
+  <article class="card">
+    <h3>時間帯別ヒートマップ</h3>
+    <div class="heatmap">
+      {% set heat = namespace(max_value=1) %}
+      {% for row in hourly_heatmap %}
+        {% if row.talk_seconds > heat.max_value %}
+          {% set heat.max_value = row.talk_seconds %}
+        {% endif %}
+      {% endfor %}
+      {% for hour in range(24) %}
+        {% set found = namespace(item=None) %}
+        {% for row in hourly_heatmap %}
+          {% if row.hour == hour %}
+            {% set found.item = row %}
+          {% endif %}
+        {% endfor %}
+        {% set value = found.item.talk_seconds if found.item else 0 %}
+        <div class="heat" style="background: rgba(156, 79, 47, {{ 0.08 + ((value / heat.max_value) * 0.48) if heat.max_value else 0.08 }});">
+          <span>{{ "%02d:00" % hour }}</span>
+          <strong>{{ format_duration(value) }}</strong>
+        </div>
+      {% endfor %}
+    </div>
+  </article>
+
+  <article class="card">
+    <h3>サーバー別内訳</h3>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>サーバー</th>
+            <th>通話</th>
+            <th>AFK</th>
+            <th>実質</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in breakdown %}
+            <tr>
+              <td>{{ row.guild_name }}</td>
+              <td>{{ format_duration(row.talk_seconds) }}</td>
+              <td>{{ format_duration(row.afk_seconds) }}</td>
+              <td>{{ format_duration(row.effective_seconds) }}</td>
+            </tr>
+          {% else %}
+            <tr>
+              <td colspan="4">内訳データはまだありません。</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </article>
+</div>
+{% endblock %}
