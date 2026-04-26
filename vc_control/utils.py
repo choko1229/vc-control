@@ -73,6 +73,14 @@ def safe_int(value: object, default: int = 0) -> int:
         return default
 
 
+def normalize_ids(guild_id: object, vc_id: object) -> tuple[int, int]:
+    return (safe_int(guild_id), safe_int(vc_id))
+
+
+def make_session_key(guild_id: object, vc_id: object) -> tuple[int, int]:
+    return normalize_ids(guild_id, vc_id)
+
+
 T = TypeVar("T")
 
 

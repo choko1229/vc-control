@@ -1,24 +1,42 @@
 {% extends "base.html" %}
+{% set page_name = "login" %}
+
 {% block content %}
-<section class="page-hero">
-  <h2>Discord ログイン</h2>
-  <p>Bot Owner はアドミン画面へ、VC参加者は自分の通話管理画面へ進めます。</p>
-</section>
-<article class="card">
-  {% if error %}
-    <div class="alert">{{ error }}</div>
-  {% endif %}
-  {% if request.query_params.get('setup') %}
-    <div class="alert">セットアップを保存しました。Bot を利用する前に一度再起動してください。</div>
-  {% endif %}
-  {% if configured_redirect_uri %}
-    <div class="footer-note">現在の Redirect URI: <code>{{ configured_redirect_uri }}</code></div>
-  {% endif %}
-  {% if recommended_redirect_uri and configured_redirect_uri != recommended_redirect_uri %}
-    <div class="alert">推奨 Redirect URI は <code>{{ recommended_redirect_uri }}</code> です。Discord Developer Portal 側も完全一致させてください。</div>
-  {% endif %}
-  <div class="panel-actions">
-    <a href="/auth/login" class="button">Discordでログイン</a>
+<section class="auth-panel">
+  <div class="auth-panel-copy">
+    <span class="frame-eyebrow">Discord OAuth2</span>
+    <h1>Discordでログイン</h1>
+    <p>Bot Owner はアドミン管理画面へ、VC参加者は自分のVC管理画面へ進めます。</p>
   </div>
-</article>
+
+  {% if error %}
+    <article class="status-box warning">
+      <strong>ログイン設定の確認が必要です</strong>
+      <p>{{ error }}</p>
+    </article>
+  {% endif %}
+
+  {% if request.query_params.get('setup') %}
+    <article class="status-box success">
+      <strong>セットアップを保存しました</strong>
+      <p>Bot を利用する前に一度再起動してください。</p>
+    </article>
+  {% endif %}
+
+  <div class="detail-card">
+    <div class="detail-card-title">現在のOAuth設定</div>
+    <div class="stacked-metrics">
+      {% if configured_redirect_uri %}
+        <span>現在の Redirect URI: <code>{{ configured_redirect_uri }}</code></span>
+      {% endif %}
+      {% if recommended_redirect_uri and configured_redirect_uri != recommended_redirect_uri %}
+        <span>推奨 Redirect URI: <code>{{ recommended_redirect_uri }}</code></span>
+      {% endif %}
+    </div>
+  </div>
+
+  <div class="form-actions">
+    <a href="/auth/login" class="button button-primary">Discordでログイン</a>
+  </div>
+</section>
 {% endblock %}

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import uuid
 from collections import defaultdict
+from contextlib import asynccontextmanager
 from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
 from typing import Any
@@ -13,10 +15,38 @@ from vc_control.security import SecretBox
 from vc_control.utils import from_iso, json_dumps, json_loads, period_cutoff, to_iso, utcnow
 
 
+SQLITE_BUSY_TIMEOUT_MS = 5000
+SQLITE_RETRY_DELAYS = (0.0, 0.2, 0.5, 1.0)
+
+
 def _row_to_dict(row: aiosqlite.Row | None) -> dict[str, Any] | None:
     if row is None:
         return None
     return {key: row[key] for key in row.keys()}
+
+
+def _is_database_locked_error(exc: Exception) -> bool:
+    return "database is locked" in str(exc).lower()
+
+
+async def _apply_sqlite_pragmas(db: aiosqlite.Connection) -> None:
+    await db.execute("PRAGMA journal_mode=WAL;")
+    await db.execute(f"PRAGMA busy_timeout={SQLITE_BUSY_TIMEOUT_MS};")
+    await db.execute("PRAGMA synchronous=NORMAL;")
+    await db.execute("PRAGMA foreign_keys=ON;")
+
+
+@asynccontextmanager
+async def _open_sqlite_connection(
+    db_path: Path,
+    *,
+    row_factory: type[aiosqlite.Row] | None = None,
+) -> Any:
+    async with aiosqlite.connect(db_path, timeout=SQLITE_BUSY_TIMEOUT_MS / 1000) as db:
+        if row_factory is not None:
+            db.row_factory = row_factory
+        await _apply_sqlite_pragmas(db)
+        yield db
 
 
 def _split_by_day(started_at: datetime, ended_at: datetime) -> list[tuple[date, int]]:
@@ -47,13 +77,32 @@ class ConfigRepository:
     def __init__(self, db_path: Path, secret_box: SecretBox) -> None:
         self.db_path = db_path
         self.secret_box = secret_box
+        self._write_lock = asyncio.Lock()
+
+    async def _run_write(self, operation: Any) -> Any:
+        async with self._write_lock:
+            last_error: Exception | None = None
+            for delay in SQLITE_RETRY_DELAYS:
+                if delay:
+                    await asyncio.sleep(delay)
+                try:
+                    async with _open_sqlite_connection(self.db_path) as db:
+                        result = await operation(db)
+                        await db.commit()
+                        return result
+                except Exception as exc:
+                    if not _is_database_locked_error(exc):
+                        raise
+                    last_error = exc
+            if last_error is not None:
+                raise last_error
+        return None
 
     async def initialize(self) -> None:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        async with aiosqlite.connect(self.db_path) as db:
+        async with _open_sqlite_connection(self.db_path) as db:
             await db.executescript(
                 """
-                PRAGMA journal_mode=WAL;
                 CREATE TABLE IF NOT EXISTS app_settings (
                     key TEXT PRIMARY KEY,
                     value TEXT NOT NULL,
@@ -100,7 +149,7 @@ class ConfigRepository:
 
     async def _set_app_setting(self, key: str, value: str) -> None:
         now = to_iso(utcnow()) or ""
-        async with aiosqlite.connect(self.db_path) as db:
+        async def operation(db: aiosqlite.Connection) -> None:
             await db.execute(
                 """
                 INSERT INTO app_settings(key, value, updated_at)
@@ -109,12 +158,12 @@ class ConfigRepository:
                 """,
                 (key, value, now),
             )
-            await db.commit()
+        await self._run_write(operation)
 
     async def _set_secure_setting(self, key: str, value: str) -> None:
         now = to_iso(utcnow()) or ""
         encrypted = self.secret_box.encrypt(value)
-        async with aiosqlite.connect(self.db_path) as db:
+        async def operation(db: aiosqlite.Connection) -> None:
             await db.execute(
                 """
                 INSERT INTO secure_settings(key, value, updated_at)
@@ -123,7 +172,7 @@ class ConfigRepository:
                 """,
                 (key, encrypted, now),
             )
-            await db.commit()
+        await self._run_write(operation)
 
     async def save_initial_setup(self, payload: SetupPayload, session_secret: str) -> None:
         await self._set_secure_setting("bot_token", payload.bot_token)
@@ -154,7 +203,7 @@ class ConfigRepository:
                 await self._set_secure_setting(key, value)
 
     async def get_app_setting(self, key: str, default: str | None = None) -> str | None:
-        async with aiosqlite.connect(self.db_path) as db:
+        async with _open_sqlite_connection(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             cursor = await db.execute("SELECT value FROM app_settings WHERE key = ?", (key,))
             row = await cursor.fetchone()
@@ -163,7 +212,7 @@ class ConfigRepository:
         return str(row["value"])
 
     async def get_secure_setting(self, key: str) -> str | None:
-        async with aiosqlite.connect(self.db_path) as db:
+        async with _open_sqlite_connection(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             cursor = await db.execute("SELECT value FROM secure_settings WHERE key = ?", (key,))
             row = await cursor.fetchone()
@@ -193,7 +242,7 @@ class ConfigRepository:
 
     async def sync_guild_catalog(self, guilds: list[tuple[int, str]]) -> None:
         now = to_iso(utcnow()) or ""
-        async with aiosqlite.connect(self.db_path) as db:
+        async def operation(db: aiosqlite.Connection) -> None:
             for guild_id, guild_name in guilds:
                 await db.execute(
                     """
@@ -203,17 +252,17 @@ class ConfigRepository:
                     """,
                     (guild_id, guild_name, now),
                 )
-            await db.commit()
+        await self._run_write(operation)
 
     async def list_guild_configs(self) -> list[GuildConfig]:
-        async with aiosqlite.connect(self.db_path) as db:
+        async with _open_sqlite_connection(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             cursor = await db.execute("SELECT * FROM guild_settings ORDER BY guild_name COLLATE NOCASE")
             rows = await cursor.fetchall()
         return [GuildConfig.from_record(_row_to_dict(row) or {}) for row in rows]
 
     async def get_guild_config(self, guild_id: int) -> GuildConfig | None:
-        async with aiosqlite.connect(self.db_path) as db:
+        async with _open_sqlite_connection(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             cursor = await db.execute("SELECT * FROM guild_settings WHERE guild_id = ?", (guild_id,))
             row = await cursor.fetchone()
@@ -224,7 +273,7 @@ class ConfigRepository:
     async def upsert_guild_config(self, config: GuildConfig) -> None:
         record = config.to_record()
         now = to_iso(utcnow()) or ""
-        async with aiosqlite.connect(self.db_path) as db:
+        async def operation(db: aiosqlite.Connection) -> None:
             await db.execute(
                 """
                 INSERT INTO guild_settings(
@@ -258,11 +307,11 @@ class ConfigRepository:
                     now,
                 ),
             )
-            await db.commit()
+        await self._run_write(operation)
 
     async def save_session_snapshot(self, snapshot: SessionSnapshot) -> None:
         now = to_iso(utcnow()) or ""
-        async with aiosqlite.connect(self.db_path) as db:
+        async def operation(db: aiosqlite.Connection) -> None:
             await db.execute(
                 """
                 INSERT INTO session_snapshots(session_key, guild_id, root_channel_id, payload_json, updated_at)
@@ -281,10 +330,10 @@ class ConfigRepository:
                     now,
                 ),
             )
-            await db.commit()
+        await self._run_write(operation)
 
     async def list_session_snapshots(self) -> list[SessionSnapshot]:
-        async with aiosqlite.connect(self.db_path) as db:
+        async with _open_sqlite_connection(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             cursor = await db.execute("SELECT payload_json FROM session_snapshots")
             rows = await cursor.fetchall()
@@ -296,13 +345,13 @@ class ConfigRepository:
         return snapshots
 
     async def delete_session_snapshot(self, session_id: str) -> None:
-        async with aiosqlite.connect(self.db_path) as db:
+        async def operation(db: aiosqlite.Connection) -> None:
             await db.execute("DELETE FROM session_snapshots WHERE session_key = ?", (session_id,))
-            await db.commit()
+        await self._run_write(operation)
 
     async def log_error(self, level: str, source: str, message: str, detail: str) -> None:
         created_at = to_iso(utcnow()) or ""
-        async with aiosqlite.connect(self.db_path) as db:
+        async def operation(db: aiosqlite.Connection) -> None:
             await db.execute(
                 """
                 INSERT INTO error_logs(created_at, level, source, message, detail)
@@ -310,11 +359,11 @@ class ConfigRepository:
                 """,
                 (created_at, level, source, message, detail),
             )
-            await db.commit()
+        await self._run_write(operation)
 
     async def get_error_logs(self, page: int = 1, per_page: int = 30) -> tuple[list[dict[str, Any]], int]:
         offset = max(0, (page - 1) * per_page)
-        async with aiosqlite.connect(self.db_path) as db:
+        async with _open_sqlite_connection(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             count_cursor = await db.execute("SELECT COUNT(*) AS total FROM error_logs")
             total_row = await count_cursor.fetchone()
@@ -334,13 +383,32 @@ class ConfigRepository:
 class StatsRepository:
     def __init__(self, db_path: Path) -> None:
         self.db_path = db_path
+        self._write_lock = asyncio.Lock()
+
+    async def _run_write(self, operation: Any) -> Any:
+        async with self._write_lock:
+            last_error: Exception | None = None
+            for delay in SQLITE_RETRY_DELAYS:
+                if delay:
+                    await asyncio.sleep(delay)
+                try:
+                    async with _open_sqlite_connection(self.db_path) as db:
+                        result = await operation(db)
+                        await db.commit()
+                        return result
+                except Exception as exc:
+                    if not _is_database_locked_error(exc):
+                        raise
+                    last_error = exc
+            if last_error is not None:
+                raise last_error
+        return None
 
     async def initialize(self) -> None:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        async with aiosqlite.connect(self.db_path) as db:
+        async with _open_sqlite_connection(self.db_path) as db:
             await db.executescript(
                 """
-                PRAGMA journal_mode=WAL;
                 CREATE TABLE IF NOT EXISTS vc_sessions (
                     session_id TEXT PRIMARY KEY,
                     guild_id INTEGER NOT NULL,
@@ -408,7 +476,7 @@ class StatsRepository:
             await db.commit()
 
     async def record_completed_session(self, session: CompletedSession) -> None:
-        async with aiosqlite.connect(self.db_path) as db:
+        async def operation(db: aiosqlite.Connection) -> None:
             await db.execute(
                 """
                 INSERT OR REPLACE INTO vc_sessions(
@@ -482,7 +550,7 @@ class StatsRepository:
                 )
 
                 await self._upsert_rollups(db, session.guild_id, session.guild_name, member)
-            await db.commit()
+        await self._run_write(operation)
 
     async def _upsert_rollups(
         self,
@@ -534,7 +602,7 @@ class StatsRepository:
             )
 
     async def get_recent_sessions(self, limit: int = 20) -> list[dict[str, Any]]:
-        async with aiosqlite.connect(self.db_path) as db:
+        async with _open_sqlite_connection(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             cursor = await db.execute(
                 """
@@ -554,7 +622,7 @@ class StatsRepository:
         limit: int = 100,
     ) -> list[dict[str, Any]]:
         cutoff = period_cutoff(period)
-        async with aiosqlite.connect(self.db_path) as db:
+        async with _open_sqlite_connection(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             if cutoff is None:
                 params: list[Any] = []
@@ -604,7 +672,7 @@ class StatsRepository:
 
     async def get_user_period_summary(self, user_id: int, period: str = "all") -> dict[str, Any]:
         cutoff = period_cutoff(period)
-        async with aiosqlite.connect(self.db_path) as db:
+        async with _open_sqlite_connection(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             if cutoff is None:
                 cursor = await db.execute(
@@ -635,7 +703,7 @@ class StatsRepository:
 
     async def get_user_guild_breakdown(self, user_id: int, period: str = "all") -> list[dict[str, Any]]:
         cutoff = period_cutoff(period)
-        async with aiosqlite.connect(self.db_path) as db:
+        async with _open_sqlite_connection(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             if cutoff is None:
                 cursor = await db.execute(
@@ -683,7 +751,7 @@ class StatsRepository:
             query += " AND guild_id = ?"
             params.append(guild_id)
         query += " GROUP BY date ORDER BY date ASC"
-        async with aiosqlite.connect(self.db_path) as db:
+        async with _open_sqlite_connection(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             cursor = await db.execute(query, tuple(params))
             rows = await cursor.fetchall()
@@ -701,14 +769,14 @@ class StatsRepository:
             query += " AND guild_id = ?"
             params.append(guild_id)
         query += " GROUP BY hour ORDER BY hour ASC"
-        async with aiosqlite.connect(self.db_path) as db:
+        async with _open_sqlite_connection(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             cursor = await db.execute(query, tuple(params))
             rows = await cursor.fetchall()
         return [_row_to_dict(row) or {} for row in rows]
 
     async def get_known_guilds_for_user(self, user_id: int) -> list[dict[str, Any]]:
-        async with aiosqlite.connect(self.db_path) as db:
+        async with _open_sqlite_connection(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             cursor = await db.execute(
                 """

@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode
 
+import discord
 import httpx
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
@@ -18,7 +19,7 @@ from starlette.templating import Jinja2Templates
 
 from vc_control.bootstrap import AppContainer
 from vc_control.models import GuildConfig, OAuthProfile, SetupPayload
-from vc_control.utils import format_duration, safe_int
+from vc_control.utils import format_duration, from_iso, make_session_key, normalize_ids, safe_int, utcnow
 
 
 def _default_dashboard_host() -> str:
@@ -108,6 +109,79 @@ def _guild_sort_key(item: dict[str, Any]) -> str:
     return str(item.get("name") or item.get("guild_name") or "").lower()
 
 
+def _asset_url(asset: discord.Asset | None) -> str | None:
+    return str(asset.url) if asset is not None else None
+
+
+def _build_initials(name: str | None) -> str:
+    text = (name or "?").strip()
+    if not text:
+        return "?"
+    parts = [part for part in text.replace("_", " ").split() if part]
+    if len(parts) >= 2:
+        return (parts[0][0] + parts[1][0]).upper()
+    return text[:2].upper()
+
+
+def _build_user_badge(display_name: str, avatar_url: str | None = None) -> dict[str, str | None]:
+    return {
+        "display_name": display_name,
+        "avatar_url": avatar_url,
+        "initials": _build_initials(display_name),
+    }
+
+
+def _serialize_guild_identity(guild: discord.Guild | None, guild_id: int, guild_name: str) -> dict[str, Any]:
+    display_name = guild.name if guild is not None else guild_name
+    return {
+        "id": str(guild_id),
+        "name": display_name,
+        "icon_url": _asset_url(guild.icon) if guild is not None else None,
+        "initials": _build_initials(display_name),
+    }
+
+
+def _resolve_guild(container: AppContainer, guild_id: int) -> discord.Guild | None:
+    if container.bot is None:
+        return None
+    return container.bot.get_guild(guild_id)
+
+
+def _resolve_member(container: AppContainer, guild_id: int, user_id: int) -> discord.Member | None:
+    guild = _resolve_guild(container, guild_id)
+    if guild is None:
+        return None
+    return guild.get_member(user_id)
+
+
+def _serialize_user_identity(
+    container: AppContainer,
+    guild_id: int,
+    user_id: int,
+    fallback_name: str,
+) -> dict[str, Any]:
+    member = _resolve_member(container, guild_id, user_id)
+    display_name = member.display_name if member is not None else fallback_name
+    avatar_url = _asset_url(member.display_avatar) if member is not None else None
+    return {
+        "id": str(user_id),
+        "display_name": display_name,
+        "avatar_url": avatar_url,
+        "initials": _build_initials(display_name),
+        "sub_label": f"ID: {user_id}",
+    }
+
+
+def _serialize_channel_entry(channel: discord.abc.GuildChannel, kind: str, icon: str) -> dict[str, Any]:
+    return {
+        "id": str(channel.id),
+        "name": channel.name,
+        "kind": kind,
+        "icon": icon,
+        "sub_label": f"ID: {channel.id}",
+    }
+
+
 def _serialize_guild_channels(container: AppContainer, guild_id: int) -> dict[str, list[dict[str, Any]]]:
     if container.bot is None:
         return {"categories": [], "voice_channels": [], "text_channels": []}
@@ -115,42 +189,112 @@ def _serialize_guild_channels(container: AppContainer, guild_id: int) -> dict[st
     if guild is None:
         return {"categories": [], "voice_channels": [], "text_channels": []}
     return {
-        "categories": [{"id": channel.id, "name": channel.name} for channel in sorted(guild.categories, key=lambda item: item.position)],
-        "voice_channels": [{"id": channel.id, "name": channel.name} for channel in sorted(guild.voice_channels, key=lambda item: item.position)],
-        "text_channels": [{"id": channel.id, "name": channel.name} for channel in sorted(guild.text_channels, key=lambda item: item.position)],
+        "categories": [
+            _serialize_channel_entry(channel, "カテゴリ", "🗂")
+            for channel in sorted(guild.categories, key=lambda item: item.position)
+        ],
+        "voice_channels": [
+            _serialize_channel_entry(channel, "ボイス", "🔊")
+            for channel in sorted(guild.voice_channels, key=lambda item: item.position)
+        ],
+        "text_channels": [
+            _serialize_channel_entry(channel, "テキスト", "#")
+            for channel in sorted(guild.text_channels, key=lambda item: item.position)
+        ],
     }
 
 
-async def _fetch_runtime_settings(container: AppContainer) -> dict[str, str]:
-    return await container.config_repo.get_runtime_settings()
+def _decorate_guild_rows(rows: list[dict[str, Any]], container: AppContainer) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    for row in rows:
+        guild_id = safe_int(row.get("guild_id") or row.get("id"))
+        guild_name = str(row.get("guild_name") or row.get("name") or guild_id)
+        guild = _resolve_guild(container, guild_id)
+        merged = dict(row)
+        merged.update(_serialize_guild_identity(guild, guild_id, guild_name))
+        result.append(merged)
+    return result
 
 
-def _owner_user_id(settings: dict[str, str]) -> int:
-    return safe_int(settings.get("owner_user_id"))
-
-
-def _oauth_config_error(settings: dict[str, str]) -> str | None:
-    if not settings.get("client_id"):
-        return "Discord Client ID が未設定です。"
-    if not settings.get("client_secret"):
-        return "Discord Client Secret が未設定です。"
-    if not settings.get("redirect_uri"):
-        return "Discord Redirect URI が未設定です。"
-    return None
-
-
-def _recommended_callback_uri(settings: dict[str, str]) -> str | None:
-    base_url = (settings.get("base_url") or "").rstrip("/")
-    if not base_url:
-        return None
-    return f"{base_url}/callback"
-
-
-def _filter_shared_guilds(profile: OAuthProfile, container: AppContainer) -> list[dict[str, Any]]:
+def _decorate_bot_guilds(container: AppContainer) -> list[dict[str, Any]]:
     if container.bot is None:
-        return list(profile.guilds)
-    bot_guild_ids = {guild.id for guild in container.bot.guilds}
-    return [guild for guild in profile.guilds if safe_int(guild.get("id")) in bot_guild_ids]
+        return []
+    rows = [
+        {
+            "id": guild.id,
+            "name": guild.name,
+            "icon_url": _asset_url(guild.icon),
+            "initials": _build_initials(guild.name),
+            "member_count": guild.member_count or 0,
+        }
+        for guild in container.bot.guilds
+    ]
+    rows.sort(key=_guild_sort_key)
+    return rows
+
+
+def _build_guild_config_defaults(guild_id: int, guild_name: str, current: GuildConfig | None) -> GuildConfig:
+    if current is not None:
+        return current
+    return GuildConfig(guild_id=guild_id, guild_name=guild_name)
+
+
+def _build_guild_diagnostics(container: AppContainer, guild_id: int, config: GuildConfig | None) -> list[dict[str, str]]:
+    diagnostics: list[dict[str, str]] = []
+    guild = _resolve_guild(container, guild_id)
+    if config is None:
+        diagnostics.append({"level": "warning", "title": "設定未作成", "message": "このサーバーの設定はまだ保存されていません。"})
+        return diagnostics
+    if config.base_voice_channel_id is None:
+        diagnostics.append({"level": "warning", "title": "基点VC未選択", "message": "基点VCが未選択です。個人VCの自動作成は動作しません。"})
+    if config.managed_category_id is None:
+        diagnostics.append({"level": "warning", "title": "管理カテゴリ未選択", "message": "管理対象カテゴリが未選択です。作成先カテゴリを設定してください。"})
+    if config.notification_channel_id is None:
+        diagnostics.append({"level": "warning", "title": "通知チャンネル未選択", "message": "通知チャンネルが未選択です。フォールバック通知や管理通知に影響します。"})
+    if guild is None or container.bot is None or container.bot.user is None:
+        diagnostics.append({"level": "warning", "title": "Bot未接続", "message": "Bot が未接続のため、権限チェックは一部確認できません。"})
+        return diagnostics
+
+    bot_member = guild.get_member(container.bot.user.id)
+    if bot_member is None:
+        diagnostics.append({"level": "danger", "title": "Botメンバー不在", "message": "このサーバー内で Bot メンバーを解決できません。"})
+        return diagnostics
+
+    if config.managed_category_id is not None:
+        category = guild.get_channel(config.managed_category_id)
+        if isinstance(category, discord.CategoryChannel):
+            perms = category.permissions_for(bot_member)
+            if not perms.manage_channels:
+                diagnostics.append({"level": "danger", "title": "VC作成権限不足", "message": "管理カテゴリで `Manage Channels` 権限がありません。"})
+        else:
+            diagnostics.append({"level": "warning", "title": "管理カテゴリ不明", "message": "選択中の管理カテゴリが存在しません。"})
+
+    if config.notification_channel_id is not None:
+        notification_channel = guild.get_channel(config.notification_channel_id)
+        if isinstance(notification_channel, discord.TextChannel):
+            perms = notification_channel.permissions_for(bot_member)
+            if not perms.send_messages:
+                diagnostics.append({"level": "danger", "title": "送信権限不足", "message": "通知チャンネルでメッセージ送信権限がありません。"})
+            if not perms.embed_links:
+                diagnostics.append({"level": "warning", "title": "Embed権限不足", "message": "通知チャンネルで Embed Links 権限がありません。"})
+        else:
+            diagnostics.append({"level": "warning", "title": "通知チャンネル不明", "message": "選択中の通知チャンネルが存在しません。"})
+
+    move_check_channel = None
+    if config.base_voice_channel_id is not None:
+        channel = guild.get_channel(config.base_voice_channel_id)
+        if isinstance(channel, discord.VoiceChannel):
+            move_check_channel = channel
+        else:
+            diagnostics.append({"level": "warning", "title": "基点VC不明", "message": "選択中の基点VCが存在しません。"})
+    if move_check_channel is not None:
+        perms = move_check_channel.permissions_for(bot_member)
+        if not perms.move_members:
+            diagnostics.append({"level": "danger", "title": "メンバー移動権限不足", "message": "基点VCで Move Members 権限がありません。"})
+
+    if not diagnostics:
+        diagnostics.append({"level": "success", "title": "設定チェックOK", "message": "主要な選択項目と権限は確認できています。"})
+    return diagnostics
 
 
 def _build_daily_chart_rows(daily_chart: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -165,6 +309,7 @@ def _build_daily_chart_rows(daily_chart: list[dict[str, Any]]) -> list[dict[str,
                 "date": row.get("date", ""),
                 "talk_seconds": talk_seconds,
                 "afk_seconds": afk_seconds,
+                "effective_seconds": max(0, talk_seconds - afk_seconds),
                 "width_percent": round((talk_seconds / scale) * 100, 2) if talk_seconds else 0.0,
             }
         )
@@ -208,6 +353,311 @@ def _build_hourly_heatmap_slots(hourly_heatmap: list[dict[str, Any]]) -> list[di
             }
         )
     return slots
+
+
+def _build_session_card(container: AppContainer, session_payload: dict[str, Any]) -> dict[str, Any]:
+    guild_id = safe_int(session_payload.get("guild_id"))
+    guild_name = str(session_payload.get("guild_name") or guild_id)
+    guild = _resolve_guild(container, guild_id)
+    started_at = from_iso(str(session_payload.get("started_at") or "")) or utcnow()
+    active_count = safe_int(session_payload.get("active_participant_count"))
+    owner = _serialize_user_identity(
+        container,
+        guild_id,
+        safe_int(session_payload.get("owner_user_id")),
+        str(session_payload.get("owner_user_name") or "Unknown"),
+    )
+    return {
+        **session_payload,
+        "guild": _serialize_guild_identity(guild, guild_id, guild_name),
+        "owner": owner,
+        "participant_count": active_count,
+        "elapsed_label": format_duration(max(0, int((utcnow() - started_at).total_seconds()))),
+        "status_label": "進行中" if active_count else "待機中",
+        "status_tone": "success" if active_count else "muted",
+    }
+
+
+def _build_session_ui_payload(container: AppContainer, session: dict[str, Any] | Any) -> dict[str, Any]:
+    payload = session if isinstance(session, dict) else session.to_payload()
+    guild_id = safe_int(payload.get("guild_id"))
+    guild_name = str(payload.get("guild_name") or guild_id)
+    guild = _resolve_guild(container, guild_id)
+    root_channel_id = safe_int(payload.get("root_channel_id"))
+    root_channel_name = str(payload.get("root_channel_name") or "VC")
+    root_channel = container.session_manager.resolve_voice_channel(root_channel_id)
+    team_channels = {str(key): safe_int(value) for key, value in dict(payload.get("team_channels", {})).items()}
+    team_assignments = {str(key): str(value) for key, value in dict(payload.get("team_assignments", {})).items()}
+
+    live_members: dict[int, discord.Member] = {}
+    if root_channel is not None and guild is not None:
+        for member in container.session_manager.get_non_bot_members_for_channel(guild, root_channel):
+            live_members[int(member.id)] = member
+    for channel_id in team_channels.values():
+        team_channel = container.session_manager.resolve_voice_channel(channel_id)
+        if team_channel is None or guild is None:
+            continue
+        for member in container.session_manager.get_non_bot_members_for_channel(guild, team_channel):
+            live_members[int(member.id)] = member
+
+    participant_map: dict[int, dict[str, Any]] = {}
+    for raw in list(payload.get("participants", [])):
+        user_id = safe_int(raw.get("user_id"))
+        participant_map[user_id] = dict(raw)
+
+    if live_members:
+        for user_id, raw in list(participant_map.items()):
+            if user_id in live_members:
+                continue
+            raw["current_channel_id"] = None
+            participant_map[user_id] = raw
+
+    for user_id, member in live_members.items():
+        raw = participant_map.get(user_id, {})
+        current_channel_id = int(member.voice.channel.id) if member.voice and member.voice.channel else root_channel_id
+        participant_map[user_id] = {
+            **raw,
+            "user_id": user_id,
+            "user_name": member.display_name,
+            "current_channel_id": current_channel_id,
+            "talk_seconds": safe_int(raw.get("talk_seconds")),
+            "afk_seconds": safe_int(raw.get("afk_seconds")),
+            "current_team": raw.get("current_team") or team_assignments.get(str(user_id)),
+            "panel_creator": bool(raw.get("panel_creator", False)),
+            "self_muted": bool(member.voice and member.voice.self_mute),
+            "server_muted": bool(member.voice and member.voice.mute),
+            "self_deafened": bool(member.voice and member.voice.self_deaf),
+            "server_deafened": bool(member.voice and member.voice.deaf),
+            "in_afk_channel": bool(
+                member.voice
+                and member.voice.channel
+                and member.guild.afk_channel
+                and member.guild.afk_channel.id == member.voice.channel.id
+            ),
+        }
+
+    participants: list[dict[str, Any]] = []
+    for raw in participant_map.values():
+        user_id = safe_int(raw.get("user_id"))
+        user = _serialize_user_identity(container, guild_id, user_id, str(raw.get("user_name") or user_id))
+        current_channel_id = safe_int(raw.get("current_channel_id")) if raw.get("current_channel_id") is not None else None
+        location_label = "離席"
+        location_kind = "away"
+        if current_channel_id == root_channel_id:
+            location_label = "メインVC"
+            location_kind = "root"
+        elif current_channel_id is not None:
+            matched_team = next((team_name for team_name, channel_id in team_channels.items() if channel_id == current_channel_id), None)
+            location_label = matched_team or "チームVC"
+            location_kind = "team"
+        participants.append(
+            {
+                **raw,
+                "user_id": str(user_id),
+                "current_channel_id": str(current_channel_id) if current_channel_id is not None else None,
+                "user": user,
+                "location_label": location_label,
+                "location_kind": location_kind,
+                "status_flags": [
+                    item
+                    for item in (
+                        {"icon": "🎙", "label": "自己ミュート"} if raw.get("self_muted") else None,
+                        {"icon": "🔇", "label": "自己デafen"} if raw.get("self_deafened") else None,
+                        {"icon": "💤", "label": "AFK"} if raw.get("in_afk_channel") else None,
+                    )
+                    if item is not None
+                ],
+            }
+        )
+    participants.sort(key=lambda item: (item.get("location_kind") == "away", item["user"]["display_name"].lower()))
+
+    teams: list[dict[str, Any]] = []
+    team_names = list(payload.get("team_names", []))
+    for team_name in team_names:
+        members = [participant for participant in participants if participant.get("current_team") == team_name]
+        teams.append(
+            {
+                "name": team_name,
+                "channel_id": str(team_channels.get(team_name)) if team_channels.get(team_name) is not None else None,
+                "member_count": len(members),
+                "members": members,
+            }
+        )
+    unassigned_members = [participant for participant in participants if not participant.get("current_team")]
+    participant_count = len([participant for participant in participants if participant.get("current_channel_id") is not None])
+
+    return {
+        **payload,
+        "guild_id": str(guild_id),
+        "root_channel_id": str(root_channel_id),
+        "starter_user_id": str(safe_int(payload.get("starter_user_id"))),
+        "owner_user_id": str(safe_int(payload.get("owner_user_id"))),
+        "panel_creator_id": str(safe_int(payload.get("panel_creator_id"))) if payload.get("panel_creator_id") is not None else None,
+        "notice_channel_id": str(safe_int(payload.get("notice_channel_id"))) if payload.get("notice_channel_id") is not None else None,
+        "notice_message_id": str(safe_int(payload.get("notice_message_id"))) if payload.get("notice_message_id") is not None else None,
+        "team_assignments": team_assignments,
+        "guild": _serialize_guild_identity(guild, guild_id, guild_name),
+        "root_channel": {
+            "id": str(root_channel_id),
+            "name": root_channel_name,
+            "icon": "🔊",
+            "user_limit": root_channel.user_limit if root_channel is not None else 0,
+            "bitrate": root_channel.bitrate if root_channel is not None else 64000,
+        },
+        "owner": _serialize_user_identity(
+            container,
+            guild_id,
+            safe_int(payload.get("owner_user_id")),
+            str(payload.get("owner_user_name") or "Unknown"),
+        ),
+        "starter": _serialize_user_identity(
+            container,
+            guild_id,
+            safe_int(payload.get("starter_user_id")),
+            str(payload.get("starter_user_name") or "Unknown"),
+        ),
+        "participant_count": participant_count,
+        "active_participant_count": participant_count,
+        "elapsed_seconds": safe_int(payload.get("elapsed_seconds")),
+        "elapsed_label": format_duration(safe_int(payload.get("elapsed_seconds"))),
+        "participants": participants,
+        "teams": teams,
+        "unassigned_members": unassigned_members,
+        "team_channels": {team_name: str(channel_id) for team_name, channel_id in team_channels.items()},
+        "has_pending_team_channels": any(team_channels.values()),
+    }
+
+
+async def _resolve_voice_dashboard_state(container: AppContainer, guild_id: int, root_channel_id: int) -> dict[str, Any]:
+    guild_id, root_channel_id = normalize_ids(guild_id, root_channel_id)
+    key = make_session_key(guild_id, root_channel_id)
+    guild = _resolve_guild(container, guild_id)
+    existing_session = container.session_manager.get_session(guild_id, root_channel_id)
+    channel = await container.session_manager.resolve_voice_channel_for_guild(guild_id, root_channel_id)
+    non_bot_members = (
+        container.session_manager.get_non_bot_members_for_channel(guild, channel)
+        if guild is not None and channel is not None
+        else []
+    )
+    session = await container.session_manager.get_or_create_active_session_for_channel(guild_id, root_channel_id)
+    restored = existing_session is None and session is not None
+    active_keys = container.session_manager.get_active_session_keys()
+
+    container.logger.info(
+        "VC管理ページ: guild_id=%s vc_id=%s key=%s active_keys=%s channel=%s members=%s session_found=%s",
+        guild_id,
+        root_channel_id,
+        key,
+        active_keys,
+        channel.name if channel else None,
+        len(non_bot_members) if channel else 0,
+        bool(session),
+    )
+    container.logger.info(
+        "[VC管理] guild_id=%s vc_id=%s active_keys=%s channel=%s non_bot_members=%s session_found=%s restored=%s",
+        guild_id,
+        root_channel_id,
+        active_keys,
+        channel.name if channel else None,
+        len(non_bot_members),
+        bool(session),
+        restored,
+    )
+
+    if session is not None:
+        session_view = _build_session_ui_payload(container, session)
+    else:
+        guild = _resolve_guild(container, guild_id)
+        config = await container.session_manager.get_guild_config(guild_id)
+        session_view = _build_session_ui_payload(
+            container,
+            {
+                "session_id": f"fallback:{guild_id}:{root_channel_id}",
+                "guild_id": guild_id,
+                "guild_name": guild.name if guild else str(guild_id),
+                "root_channel_id": root_channel_id,
+                "root_channel_name": channel.name if channel else str(root_channel_id),
+                "starter_user_id": non_bot_members[0].id if non_bot_members else 0,
+                "starter_user_name": non_bot_members[0].display_name if non_bot_members else "Unknown",
+                "owner_user_id": non_bot_members[0].id if non_bot_members else 0,
+                "owner_user_name": non_bot_members[0].display_name if non_bot_members else "Unknown",
+                "started_at": utcnow().isoformat(),
+                "panel_creator_id": None,
+                "panel_creator_name": None,
+                "team_names": config.team_names.copy() if config else ["A", "B", "C", "D"],
+                "team_mode": config.team_mode if config else "custom",
+                "team_assignments": {},
+                "team_channels": {},
+                "participants": [],
+                "active_participant_count": len(non_bot_members),
+                "elapsed_seconds": 0,
+            },
+        )
+
+    management_url = await container.session_manager.build_management_url(guild_id, root_channel_id)
+    return {
+        "key": key,
+        "session": session,
+        "session_view": session_view,
+        "guild": _resolve_guild(container, guild_id),
+        "channel": channel,
+        "participants": session_view["participants"],
+        "teams": session_view["teams"],
+        "unassigned_members": session_view["unassigned_members"],
+        "non_bot_members": non_bot_members,
+        "management_url": management_url,
+        "restored": restored,
+    }
+
+
+def _build_rankings_view(rankings: list[dict[str, Any]], container: AppContainer) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    bot_user_id = container.bot.user.id if container.bot and container.bot.user else None
+    rows: list[dict[str, Any]] = []
+    for row in rankings:
+        user_id = safe_int(row.get("user_id"))
+        if bot_user_id is not None and user_id == bot_user_id:
+            continue
+        guild_id = safe_int(row.get("guild_id"))
+        guild_name = str(row.get("guild_name") or guild_id)
+        guild = _resolve_guild(container, guild_id)
+        decorated = dict(row)
+        decorated["guild"] = _serialize_guild_identity(guild, guild_id, guild_name)
+        decorated["user"] = _serialize_user_identity(container, guild_id, user_id, str(row.get("user_name") or user_id))
+        decorated["rank_label"] = f"{safe_int(row.get('rank'))}位"
+        rows.append(decorated)
+    return rows[:3], rows[3:]
+
+
+async def _fetch_runtime_settings(container: AppContainer) -> dict[str, str]:
+    return await container.config_repo.get_runtime_settings()
+
+
+def _owner_user_id(settings: dict[str, str]) -> int:
+    return safe_int(settings.get("owner_user_id"))
+
+
+def _oauth_config_error(settings: dict[str, str]) -> str | None:
+    if not settings.get("client_id"):
+        return "Discord Client ID が未設定です。"
+    if not settings.get("client_secret"):
+        return "Discord Client Secret が未設定です。"
+    if not settings.get("redirect_uri"):
+        return "Discord Redirect URI が未設定です。"
+    return None
+
+
+def _recommended_callback_uri(settings: dict[str, str]) -> str | None:
+    base_url = (settings.get("base_url") or "").rstrip("/")
+    if not base_url:
+        return None
+    return f"{base_url}/callback"
+
+
+def _filter_shared_guilds(profile: OAuthProfile, container: AppContainer) -> list[dict[str, Any]]:
+    if container.bot is None:
+        return list(profile.guilds)
+    bot_guild_ids = {guild.id for guild in container.bot.guilds}
+    return [guild for guild in profile.guilds if safe_int(guild.get("id")) in bot_guild_ids]
 
 
 def _build_auth_url(settings: dict[str, str], state: str) -> str:
@@ -276,13 +726,22 @@ def create_app(container: AppContainer) -> FastAPI:
         status_code: int = 200,
     ) -> HTMLResponse:
         profile = _current_profile(request)
+        current_user_view = None
+        if profile is not None:
+            current_user_view = {
+                **_build_user_badge(profile.display_name, profile.avatar_url),
+                "id": str(profile.user_id),
+            }
         base_context = {
             "request": request,
             "current_user": profile,
+            "current_user_view": current_user_view,
+            "is_owner": bool(request.session.get("is_owner")),
             "app_version": "1.0.0",
         }
         if context:
             base_context.update(context)
+        base_context["is_owner"] = bool(base_context.get("is_owner"))
         return templates.TemplateResponse(
             request=request,
             name=template_name,
@@ -463,6 +922,7 @@ def create_app(container: AppContainer) -> FastAPI:
             profile.guilds = shared_guilds
         request.session["oauth_profile"] = profile.to_session()
         request.session["shared_guild_ids"] = [safe_int(guild.get("id")) for guild in shared_guilds]
+        request.session["is_owner"] = is_admin
         return RedirectResponse("/admin" if is_admin else "/dashboard/me", status_code=302)
 
     @app.get("/callback", response_class=HTMLResponse, response_model=None)
@@ -482,14 +942,15 @@ def create_app(container: AppContainer) -> FastAPI:
         settings = await _fetch_runtime_settings(container)
         is_admin = _owner_user_id(settings) == profile.user_id
         sessions = await container.session_manager.list_accessible_sessions(profile.user_id)
+        session_cards = [_build_session_card(container, session) for session in sessions]
         summary = await container.stats_repo.get_user_period_summary(profile.user_id, "all")
-        guild_breakdown = await container.stats_repo.get_user_guild_breakdown(profile.user_id, "all")
+        guild_breakdown = _decorate_guild_rows(await container.stats_repo.get_user_guild_breakdown(profile.user_id, "all"), container)
         return render(
             request,
             "dashboard.html",
             {
                 "title": "マイダッシュボード",
-                "sessions": sessions,
+                "sessions": session_cards,
                 "summary": summary,
                 "guild_breakdown": guild_breakdown,
                 "is_admin": is_admin,
@@ -497,16 +958,53 @@ def create_app(container: AppContainer) -> FastAPI:
             },
         )
 
+    @app.get("/dashboard/settings", response_class=HTMLResponse, response_model=None)
+    async def user_settings(request: Request) -> Response:
+        await _require_profile(request)
+        return render(
+            request,
+            "user_settings.html",
+            {
+                "title": "ユーザー設定",
+            },
+        )
+
     @app.get("/dashboard/voice/{guild_id}/{root_channel_id}", response_class=HTMLResponse, response_model=None)
     async def voice_dashboard(request: Request, guild_id: int, root_channel_id: int) -> Response:
         profile = await _require_profile(request)
-        session = container.session_manager.get_session_by_root(root_channel_id)
-        if session is None or session.guild_id != guild_id:
-            raise HTTPException(status_code=404, detail="セッションが見つかりません。")
-        if not await container.session_manager.can_view_session(session, profile.user_id):
-            raise HTTPException(status_code=403, detail="閲覧権限がありません。")
-        can_edit = await container.session_manager.can_edit_session(session, profile.user_id)
-        voice_channel = container.session_manager.resolve_voice_channel(root_channel_id)
+        state = await _resolve_voice_dashboard_state(container, guild_id, root_channel_id)
+        session = state["session"]
+        container.logger.info(
+            "[VC管理ページ] guild_id=%s vc_id=%s active_keys=%s channel=%s non_bot_members=%s session_found=%s restored=%s",
+            safe_int(guild_id),
+            safe_int(root_channel_id),
+            container.session_manager.get_active_session_keys(),
+            state["channel"].name if state["channel"] else None,
+            len(state["non_bot_members"]),
+            bool(session),
+            bool(state.get("restored")),
+        )
+        channel = state["channel"]
+        non_bot_members = state["non_bot_members"]
+
+        if session is None and not non_bot_members:
+            raise HTTPException(status_code=404, detail="このVCには現在アクティブなセッションがありません。")
+
+        if session is not None:
+            if not await container.session_manager.can_view_session(session, profile.user_id):
+                raise HTTPException(status_code=403, detail="閲覧権限がありません。")
+            can_edit = await container.session_manager.can_edit_session(session, profile.user_id)
+            can_assign_others = await container.session_manager.can_assign_others(session, profile.user_id)
+        else:
+            member_ids = {member.id for member in non_bot_members}
+            if profile.user_id not in member_ids and not await container.session_manager.is_guild_admin(guild_id, profile.user_id):
+                raise HTTPException(status_code=403, detail="閲覧権限がありません。")
+            can_edit = await container.session_manager.is_guild_admin(guild_id, profile.user_id)
+            can_assign_others = False
+
+        session_view = state["session_view"]
+        session_view["can_edit"] = can_edit
+        session_view["can_assign_others"] = can_assign_others
         return render(
             request,
             "voice.html",
@@ -515,10 +1013,16 @@ def create_app(container: AppContainer) -> FastAPI:
                 "page_name": "voice",
                 "guild_id": guild_id,
                 "root_channel_id": root_channel_id,
-                "session": session.to_payload(),
+                "session": session_view,
+                "guild": state["guild"],
+                "channel": channel,
+                "participants": state["participants"],
+                "teams": state["teams"],
+                "unassigned_members": state["unassigned_members"],
                 "can_edit": can_edit,
-                "can_assign_others": await container.session_manager.can_assign_others(session, profile.user_id),
-                "voice_channel": voice_channel,
+                "can_assign_others": can_assign_others,
+                "can_manage": can_edit,
+                "management_url": state["management_url"],
                 "format_duration": format_duration,
             },
         )
@@ -527,8 +1031,8 @@ def create_app(container: AppContainer) -> FastAPI:
     async def my_stats(request: Request, period: str = "all", guild_id: int | None = None) -> Response:
         profile = await _require_profile(request)
         summary = await container.stats_repo.get_user_period_summary(profile.user_id, period)
-        breakdown = await container.stats_repo.get_user_guild_breakdown(profile.user_id, period)
-        known_guilds = await container.stats_repo.get_known_guilds_for_user(profile.user_id)
+        breakdown = _decorate_guild_rows(await container.stats_repo.get_user_guild_breakdown(profile.user_id, period), container)
+        known_guilds = _decorate_guild_rows(await container.stats_repo.get_known_guilds_for_user(profile.user_id), container)
         daily_chart = await container.stats_repo.get_user_daily_chart(profile.user_id, guild_id)
         hourly_heatmap = await container.stats_repo.get_user_hourly_heatmap(profile.user_id, guild_id)
         daily_chart_rows = _build_daily_chart_rows(daily_chart)
@@ -555,7 +1059,8 @@ def create_app(container: AppContainer) -> FastAPI:
     async def rankings(request: Request, period: str = "all", guild_id: int | None = None) -> Response:
         profile = await _require_profile(request)
         rankings_data = await container.stats_repo.get_rankings(period=period, guild_id=guild_id, limit=100)
-        known_guilds = await container.stats_repo.get_known_guilds_for_user(profile.user_id)
+        known_guilds = _decorate_guild_rows(await container.stats_repo.get_known_guilds_for_user(profile.user_id), container)
+        top_rankings, other_rankings = _build_rankings_view(rankings_data, container)
         return render(
             request,
             "rankings.html",
@@ -563,7 +1068,8 @@ def create_app(container: AppContainer) -> FastAPI:
                 "title": "ランキング",
                 "period": period,
                 "selected_guild_id": guild_id,
-                "rankings": rankings_data,
+                "top_rankings": top_rankings,
+                "other_rankings": other_rankings,
                 "known_guilds": known_guilds,
                 "format_duration": format_duration,
             },
@@ -574,16 +1080,18 @@ def create_app(container: AppContainer) -> FastAPI:
         profile = await _require_admin(request, container)
         settings = await _fetch_runtime_settings(container)
         guild_configs = await container.config_repo.list_guild_configs()
-        bot_guilds = [
-            {"id": guild.id, "name": guild.name}
-            for guild in (container.bot.guilds if container.bot else [])
-        ]
-        bot_guilds.sort(key=_guild_sort_key)
+        bot_guilds = _decorate_bot_guilds(container)
         selected_guild_id = guild_id or (bot_guilds[0]["id"] if bot_guilds else None)
         selected_config = next((config for config in guild_configs if config.guild_id == selected_guild_id), None)
+        selected_config_saved = selected_config is not None
         channel_catalog = _serialize_guild_channels(container, selected_guild_id) if selected_guild_id else {"categories": [], "voice_channels": [], "text_channels": []}
+        selected_guild = next((guild for guild in bot_guilds if guild["id"] == selected_guild_id), None)
+        if selected_guild_id is not None:
+            guild_name = selected_guild["name"] if selected_guild else str(selected_guild_id)
+            selected_config = _build_guild_config_defaults(selected_guild_id, guild_name, selected_config)
+        diagnostics = _build_guild_diagnostics(container, selected_guild_id, selected_config) if selected_guild_id and selected_config else []
         error_logs, total_logs = await container.config_repo.get_error_logs(page=page, per_page=25)
-        recent_sessions = await container.stats_repo.get_recent_sessions(limit=20)
+        recent_sessions = _decorate_guild_rows(await container.stats_repo.get_recent_sessions(limit=20), container)
         return render(
             request,
             "admin.html",
@@ -592,14 +1100,18 @@ def create_app(container: AppContainer) -> FastAPI:
                 "profile": profile,
                 "settings": settings,
                 "bot_guilds": bot_guilds,
+                "selected_guild": selected_guild,
                 "selected_guild_id": selected_guild_id,
                 "selected_config": selected_config,
+                "selected_config_saved": selected_config_saved,
                 "channel_catalog": channel_catalog,
+                "diagnostics": diagnostics,
                 "recent_sessions": recent_sessions,
                 "error_logs": error_logs,
                 "page": page,
                 "total_logs": total_logs,
                 "format_duration": format_duration,
+                "recommended_redirect_uri": _recommended_callback_uri(settings),
             },
         )
 
@@ -645,28 +1157,140 @@ def create_app(container: AppContainer) -> FastAPI:
         await container.session_manager.refresh_guild_configs()
         return RedirectResponse(f"/admin?guild_id={guild_id}&saved=1", status_code=302)
 
+    @app.post("/api/admin/settings")
+    async def api_update_admin_settings(request: Request) -> JSONResponse:
+        await _require_admin(request, container)
+        payload = await request.json()
+        current = await _fetch_runtime_settings(container)
+        plain_values = {
+            "client_id": str(payload.get("client_id", current.get("client_id", ""))).strip(),
+            "redirect_uri": str(payload.get("redirect_uri", current.get("redirect_uri", ""))).strip(),
+            "base_url": str(payload.get("base_url", current.get("base_url", ""))).strip(),
+            "owner_user_id": str(safe_int(payload.get("owner_user_id", current.get("owner_user_id", "0")))),
+            "dashboard_host": str(payload.get("dashboard_host", current.get("dashboard_host", _default_dashboard_host()))).strip(),
+            "dashboard_port": str(safe_int(payload.get("dashboard_port", current.get("dashboard_port", _default_dashboard_port())))),
+        }
+        secure_values = {
+            "bot_token": str(payload.get("bot_token", "")).strip(),
+            "client_secret": str(payload.get("client_secret", "")).strip(),
+        }
+        await container.config_repo.update_runtime_settings(plain_values, secure_values)
+        updated = await _fetch_runtime_settings(container)
+        warnings: list[dict[str, str]] = []
+        config_error = _oauth_config_error(updated)
+        if config_error:
+            warnings.append({"level": "warning", "title": "OAuth設定", "message": config_error})
+        recommended_redirect_uri = _recommended_callback_uri(updated)
+        if updated.get("redirect_uri") and recommended_redirect_uri and updated["redirect_uri"] != recommended_redirect_uri:
+            warnings.append(
+                {
+                    "level": "warning",
+                    "title": "Redirect URI不一致",
+                    "message": f"推奨値は {recommended_redirect_uri} です。Discord Developer Portal 側も完全一致させてください。",
+                }
+            )
+        return JSONResponse(
+            {
+                "ok": True,
+                "message": "基本設定を保存しました。",
+                "warnings": warnings,
+                "settings": updated,
+                "recommended_redirect_uri": recommended_redirect_uri,
+            }
+        )
+
+    @app.post("/api/admin/guilds/{guild_id}/settings")
+    async def api_update_admin_guild_settings(request: Request, guild_id: int) -> JSONResponse:
+        await _require_admin(request, container)
+        payload = await request.json()
+        current = await container.config_repo.get_guild_config(guild_id)
+        guild = container.bot.get_guild(guild_id) if container.bot else None
+        guild_name = current.guild_name if current else (guild.name if guild else str(guild_id))
+        base_config = _build_guild_config_defaults(guild_id, guild_name, current)
+        config = GuildConfig(
+            guild_id=guild_id,
+            guild_name=guild_name,
+            managed_category_id=safe_int(payload["managed_category_id"]) or None if "managed_category_id" in payload else base_config.managed_category_id,
+            base_voice_channel_id=safe_int(payload["base_voice_channel_id"]) or None if "base_voice_channel_id" in payload else base_config.base_voice_channel_id,
+            notification_channel_id=safe_int(payload["notification_channel_id"]) or None if "notification_channel_id" in payload else base_config.notification_channel_id,
+            first_empty_notice_sec=safe_int(payload.get("first_empty_notice_sec", base_config.first_empty_notice_sec), base_config.first_empty_notice_sec),
+            final_delete_sec=safe_int(payload.get("final_delete_sec", base_config.final_delete_sec), base_config.final_delete_sec),
+            team_mode=str(payload.get("team_mode", base_config.team_mode)).strip() or base_config.team_mode,
+            team_names=[name.strip() for name in str(payload.get("team_names", ",".join(base_config.team_names))).split(",") if name.strip()],
+            enabled=bool(payload.get("enabled", base_config.enabled)),
+        )
+        await container.config_repo.upsert_guild_config(config)
+        await container.session_manager.refresh_guild_configs()
+        return JSONResponse(
+            {
+                "ok": True,
+                "message": "サーバー設定を保存しました。",
+                "diagnostics": _build_guild_diagnostics(container, guild_id, config),
+                "config": {
+                    "managed_category_id": config.managed_category_id,
+                    "base_voice_channel_id": config.base_voice_channel_id,
+                    "notification_channel_id": config.notification_channel_id,
+                    "first_empty_notice_sec": config.first_empty_notice_sec,
+                    "final_delete_sec": config.final_delete_sec,
+                    "team_mode": config.team_mode,
+                    "team_names": config.team_names,
+                    "enabled": config.enabled,
+                },
+            }
+        )
+
     @app.get("/api/ws-token")
     async def ws_token(request: Request) -> JSONResponse:
         profile = await _require_profile(request)
         return JSONResponse({"token": _sign_ws_token(app.state.ws_secret, profile.user_id)})
 
-    @app.get("/api/voice/{guild_id}/{root_channel_id}")
-    async def session_payload(request: Request, guild_id: int, root_channel_id: int) -> JSONResponse:
+    async def _voice_state_payload(request: Request, guild_id: int, root_channel_id: int) -> JSONResponse:
         profile = await _require_profile(request)
-        session = container.session_manager.get_session_by_root(root_channel_id)
-        if session is None or session.guild_id != guild_id:
-            raise HTTPException(status_code=404, detail="セッションが見つかりません。")
+        state = await _resolve_voice_dashboard_state(container, guild_id, root_channel_id)
+        session = state["session"]
+        container.logger.info(
+            "[VC API] guild_id=%s vc_id=%s active_keys=%s channel=%s non_bot_members=%s session_found=%s restored=%s",
+            safe_int(guild_id),
+            safe_int(root_channel_id),
+            container.session_manager.get_active_session_keys(),
+            state["channel"].name if state["channel"] else None,
+            len(state["non_bot_members"]),
+            bool(session),
+            bool(state.get("restored")),
+        )
+        if session is None and not state["non_bot_members"]:
+            raise HTTPException(status_code=404, detail="このVCには現在アクティブなセッションがありません。")
+        if session is None:
+            member_ids = {member.id for member in state["non_bot_members"]}
+            if profile.user_id not in member_ids and not await container.session_manager.is_guild_admin(guild_id, profile.user_id):
+                raise HTTPException(status_code=403, detail="閲覧権限がありません。")
+            payload = state["session_view"]
+            payload["can_edit"] = await container.session_manager.is_guild_admin(guild_id, profile.user_id)
+            payload["can_assign_others"] = False
+            payload["management_url"] = state["management_url"]
+            return JSONResponse(payload)
         if not await container.session_manager.can_view_session(session, profile.user_id):
             raise HTTPException(status_code=403, detail="閲覧権限がありません。")
-        payload = session.to_payload()
+        payload = state["session_view"]
         payload["can_edit"] = await container.session_manager.can_edit_session(session, profile.user_id)
+        payload["can_assign_others"] = await container.session_manager.can_assign_others(session, profile.user_id)
+        payload["management_url"] = state["management_url"]
         return JSONResponse(payload)
+
+    @app.get("/api/voice/{guild_id}/{root_channel_id}")
+    async def session_payload(request: Request, guild_id: int, root_channel_id: int) -> JSONResponse:
+        return await _voice_state_payload(request, guild_id, root_channel_id)
+
+    @app.get("/api/voice/{guild_id}/{root_channel_id}/state")
+    async def session_state_payload(request: Request, guild_id: int, root_channel_id: int) -> JSONResponse:
+        return await _voice_state_payload(request, guild_id, root_channel_id)
 
     @app.post("/api/voice/{guild_id}/{root_channel_id}/settings")
     async def api_update_voice_settings(request: Request, guild_id: int, root_channel_id: int) -> JSONResponse:
         profile = await _require_profile(request)
-        session = container.session_manager.get_session_by_root(root_channel_id)
-        if session is None or session.guild_id != guild_id:
+        guild_id, root_channel_id = normalize_ids(guild_id, root_channel_id)
+        session = await container.session_manager.get_or_restore_session(guild_id, root_channel_id)
+        if session is None:
             raise HTTPException(status_code=404, detail="セッションが見つかりません。")
         if not await container.session_manager.can_edit_session(session, profile.user_id):
             raise HTTPException(status_code=403, detail="変更権限がありません。")
@@ -682,8 +1306,9 @@ def create_app(container: AppContainer) -> FastAPI:
     @app.post("/api/voice/{guild_id}/{root_channel_id}/member-state")
     async def api_member_state(request: Request, guild_id: int, root_channel_id: int) -> JSONResponse:
         profile = await _require_profile(request)
-        session = container.session_manager.get_session_by_root(root_channel_id)
-        if session is None or session.guild_id != guild_id:
+        guild_id, root_channel_id = normalize_ids(guild_id, root_channel_id)
+        session = await container.session_manager.get_or_restore_session(guild_id, root_channel_id)
+        if session is None:
             raise HTTPException(status_code=404, detail="セッションが見つかりません。")
         if not await container.session_manager.can_edit_session(session, profile.user_id):
             raise HTTPException(status_code=403, detail="変更権限がありません。")
@@ -699,8 +1324,9 @@ def create_app(container: AppContainer) -> FastAPI:
     @app.post("/api/voice/{guild_id}/{root_channel_id}/team/assign")
     async def api_team_assign(request: Request, guild_id: int, root_channel_id: int) -> JSONResponse:
         profile = await _require_profile(request)
-        session = container.session_manager.get_session_by_root(root_channel_id)
-        if session is None or session.guild_id != guild_id:
+        guild_id, root_channel_id = normalize_ids(guild_id, root_channel_id)
+        session = await container.session_manager.get_or_restore_session(guild_id, root_channel_id)
+        if session is None:
             raise HTTPException(status_code=404, detail="セッションが見つかりません。")
         payload = await request.json()
         try:
@@ -719,8 +1345,9 @@ def create_app(container: AppContainer) -> FastAPI:
     @app.post("/api/voice/{guild_id}/{root_channel_id}/team/split")
     async def api_team_split(request: Request, guild_id: int, root_channel_id: int) -> JSONResponse:
         profile = await _require_profile(request)
-        session = container.session_manager.get_session_by_root(root_channel_id)
-        if session is None or session.guild_id != guild_id:
+        guild_id, root_channel_id = normalize_ids(guild_id, root_channel_id)
+        session = await container.session_manager.get_or_restore_session(guild_id, root_channel_id)
+        if session is None:
             raise HTTPException(status_code=404, detail="セッションが見つかりません。")
         try:
             result = await container.session_manager.split_teams(root_channel_id, profile.user_id)
@@ -733,8 +1360,9 @@ def create_app(container: AppContainer) -> FastAPI:
     @app.post("/api/voice/{guild_id}/{root_channel_id}/team/assemble")
     async def api_team_assemble(request: Request, guild_id: int, root_channel_id: int) -> JSONResponse:
         profile = await _require_profile(request)
-        session = container.session_manager.get_session_by_root(root_channel_id)
-        if session is None or session.guild_id != guild_id:
+        guild_id, root_channel_id = normalize_ids(guild_id, root_channel_id)
+        session = await container.session_manager.get_or_restore_session(guild_id, root_channel_id)
+        if session is None:
             raise HTTPException(status_code=404, detail="セッションが見つかりません。")
         try:
             result = await container.session_manager.assemble_teams(root_channel_id, profile.user_id)
@@ -747,8 +1375,9 @@ def create_app(container: AppContainer) -> FastAPI:
     @app.post("/api/voice/{guild_id}/{root_channel_id}/team/recall")
     async def api_team_recall(request: Request, guild_id: int, root_channel_id: int) -> JSONResponse:
         profile = await _require_profile(request)
-        session = container.session_manager.get_session_by_root(root_channel_id)
-        if session is None or session.guild_id != guild_id:
+        guild_id, root_channel_id = normalize_ids(guild_id, root_channel_id)
+        session = await container.session_manager.get_or_restore_session(guild_id, root_channel_id)
+        if session is None:
             raise HTTPException(status_code=404, detail="セッションが見つかりません。")
         payload = await request.json()
         try:

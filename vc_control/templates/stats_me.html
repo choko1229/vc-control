@@ -1,118 +1,198 @@
 {% extends "base.html" %}
+{% set page_name = "stats" %}
+
+{% block header_eyebrow %}通話統計{% endblock %}
+{% block header_title %}自分の通話時間{% endblock %}
+{% block header_subtitle %}Discord 設定画面風の高密度レイアウトで、期間別の通話・AFK実績を確認できます。{% endblock %}
+
 {% block content %}
-<section class="page-hero">
-  <h2>自分の通話時間</h2>
-  <p>期間は表のみ切り替えできます。グラフはサーバー別フィルタ付きの固定表示です。</p>
-</section>
+<div class="page-shell">
+  <aside class="page-sidebar">
+    <section class="sidebar-panel">
+      <div class="sidebar-panel-title">フィルター</div>
+      <form method="get" action="/dashboard/stats/me" class="sidebar-form">
+        <label>表示期間
+          <select name="period">
+            {% for key, label in [("day","当日"),("week","1週間"),("month","1か月"),("year","1年"),("all","全期間")] %}
+              <option value="{{ key }}" {% if period == key %}selected{% endif %}>{{ label }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <label>サーバー
+          <select name="guild_id">
+            <option value="">全サーバー</option>
+            {% for guild in known_guilds %}
+              <option value="{{ guild.guild_id }}" {% if selected_guild_id == guild.guild_id %}selected{% endif %}>{{ guild.name }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <button type="submit" class="button button-primary">反映</button>
+      </form>
+    </section>
 
-<article class="card">
-  <form method="get" action="/dashboard/stats/me" class="inline">
-    <label>表示期間
-      <select name="period">
-        {% for key, label in [("day","当日"),("week","1週間"),("month","1か月"),("year","1年"),("all","全期間")] %}
-          <option value="{{ key }}" {% if period == key %}selected{% endif %}>{{ label }}</option>
-        {% endfor %}
-      </select>
-    </label>
-    <label>サーバー
-      <select name="guild_id">
-        <option value="">全サーバー</option>
+    <section class="sidebar-panel">
+      <div class="sidebar-panel-title">サーバー切替</div>
+      <div class="sidebar-list">
+        <a class="sidebar-nav-link {% if not selected_guild_id %}is-active{% endif %}" href="/dashboard/stats/me?period={{ period }}">全サーバー</a>
         {% for guild in known_guilds %}
-          <option value="{{ guild.guild_id }}" {% if selected_guild_id == guild.guild_id %}selected{% endif %}>{{ guild.guild_name }}</option>
+          <a class="sidebar-guild-row {% if selected_guild_id == guild.guild_id %}is-active{% endif %}" href="/dashboard/stats/me?period={{ period }}&guild_id={{ guild.guild_id }}">
+            <span class="avatar avatar-xs">
+              {% if guild.icon_url %}
+                <img src="{{ guild.icon_url }}" alt="{{ guild.name }}">
+              {% else %}
+                <span>{{ guild.initials }}</span>
+              {% endif %}
+            </span>
+            <span class="sidebar-session-copy">
+              <strong>{{ guild.name }}</strong>
+              <small>通話 {{ format_duration(guild.talk_seconds) }}</small>
+            </span>
+          </a>
+        {% else %}
+          <div class="sidebar-empty">表示できるサーバー別統計はありません。</div>
         {% endfor %}
-      </select>
-    </label>
-    <button type="submit">反映</button>
-  </form>
-</article>
+      </div>
+    </section>
+  </aside>
 
-<section class="summary" style="margin-top:18px;">
-  <article class="metric">
-    <span>通話時間</span>
-    <strong>{{ format_duration(summary.talk_seconds) }}</strong>
-  </article>
-  <article class="metric">
-    <span>AFK時間</span>
-    <strong>{{ format_duration(summary.afk_seconds) }}</strong>
-  </article>
-  <article class="metric">
-    <span>実質通話時間</span>
-    <strong>{{ format_duration(summary.effective_seconds) }}</strong>
-  </article>
-</section>
+  <section class="page-main">
+    <section class="content-section">
+      <div class="section-header">
+        <div>
+          <h2>概要</h2>
+          <p>通話時間、AFK時間、実質通話時間をすぐ確認できます。</p>
+        </div>
+      </div>
 
-<div class="grid cols-2" style="margin-top:18px;">
-  <article class="card">
-    <h3>日別通話時間</h3>
-    <div class="chart-bars">
-      {% for row in daily_chart_rows %}
-        <div class="bar-row">
-          <span>{{ row.date }}</span>
-          <div class="bar" style="width: {{ row.width_percent }}%;"></div>
-          <strong>{{ format_duration(row.talk_seconds) }}</strong>
+      <div class="metric-strip">
+        <article class="metric-tile">
+          <span class="metric-tile-label">通話時間</span>
+          <strong>{{ format_duration(summary.talk_seconds) }}</strong>
+        </article>
+        <article class="metric-tile">
+          <span class="metric-tile-label">AFK時間</span>
+          <strong>{{ format_duration(summary.afk_seconds) }}</strong>
+        </article>
+        <article class="metric-tile">
+          <span class="metric-tile-label">実質通話時間</span>
+          <strong>{{ format_duration(summary.effective_seconds) }}</strong>
+        </article>
+      </div>
+    </section>
+
+    <section class="content-section">
+      <div class="section-header">
+        <div>
+          <h2>日別通話時間</h2>
+          <p>派手なカードを使わず、GitHub 風の整理されたグラフにしています。</p>
+        </div>
+      </div>
+
+      <div class="bar-chart">
+        {% for row in daily_chart_rows %}
+          <div class="bar-chart-row">
+            <div class="bar-chart-meta">
+              <strong>{{ row.date }}</strong>
+              <small>実質 {{ format_duration(row.effective_seconds) }}</small>
+            </div>
+            <div class="bar-track">
+              <div class="bar-fill" data-bar-width="{{ row.width_percent }}" style="--target-width: {{ row.width_percent }}%;"></div>
+            </div>
+            <div class="bar-chart-value">{{ format_duration(row.talk_seconds) }}</div>
+          </div>
+        {% else %}
+          <div class="empty-panel">
+            <strong>日別データがありません</strong>
+            <p>通話履歴が蓄積されるとここへ推移が表示されます。</p>
+          </div>
+        {% endfor %}
+      </div>
+    </section>
+
+    <section class="content-section">
+      <div class="section-header">
+        <div>
+          <h2>時間帯別ヒートマップ</h2>
+          <p>Discord 配色に合わせた控えめな濃度差で可視化しています。</p>
+        </div>
+      </div>
+
+      <div class="heatmap-grid">
+        {% for slot in hourly_heatmap_slots %}
+          <article class="heat-cell" style="background: rgba(88, 101, 242, {{ slot.alpha }});">
+            <span>{{ slot.label }}</span>
+            <strong>{{ format_duration(slot.talk_seconds) }}</strong>
+          </article>
+        {% endfor %}
+      </div>
+    </section>
+  </section>
+
+  <aside class="page-detail">
+    <section class="content-section">
+      <div class="section-header">
+        <div>
+          <h2>通話 / AFK 比率</h2>
+          <p>AFK と実質通話のバランスです。</p>
+        </div>
+      </div>
+
+      <div class="ratio-panel">
+        <div class="ratio-ring" style="background: conic-gradient(var(--accent) 0 {{ talk_ratio.effective_percent }}%, var(--bg-panel-soft) {{ talk_ratio.effective_percent }}% 100%);">
+          <div class="ratio-ring-inner">
+            <strong>{{ talk_ratio.effective_percent | round(0) }}%</strong>
+            <small>実質通話</small>
+          </div>
+        </div>
+
+        <div class="stacked-metrics">
+          <span>実質 {{ format_duration(summary.effective_seconds) }}</span>
+          <span>AFK {{ format_duration(summary.afk_seconds) }}</span>
+          <span>通話 {{ format_duration(summary.talk_seconds) }}</span>
+        </div>
+      </div>
+    </section>
+
+    <section class="content-section">
+      <div class="section-header">
+        <div>
+          <h2>サーバー別内訳</h2>
+          <p>サーバーごとの通話傾向をまとめています。</p>
+        </div>
+      </div>
+
+      {% if breakdown %}
+        <div class="compact-table">
+          {% for row in breakdown %}
+            <div class="compact-table-row">
+              <div class="row-primary">
+                <span class="avatar avatar-xs">
+                  {% if row.icon_url %}
+                    <img src="{{ row.icon_url }}" alt="{{ row.name }}">
+                  {% else %}
+                    <span>{{ row.initials }}</span>
+                  {% endif %}
+                </span>
+                <div class="row-copy">
+                  <strong>{{ row.guild_name }}</strong>
+                  <small>サーバー別合算</small>
+                </div>
+              </div>
+              <div class="stacked-metrics">
+                <span>通話 {{ format_duration(row.talk_seconds) }}</span>
+                <span>AFK {{ format_duration(row.afk_seconds) }}</span>
+                <span>実質 {{ format_duration(row.effective_seconds) }}</span>
+              </div>
+            </div>
+          {% endfor %}
         </div>
       {% else %}
-        <p class="muted">表示できる日別データがありません。</p>
-      {% endfor %}
-    </div>
-  </article>
-
-  <article class="card">
-    <h3>通話時間 vs AFK時間</h3>
-    <div class="ratio">
-      <div class="ratio-track">
-        <div class="ratio-talk" style="width: {{ talk_ratio.effective_percent }}%"></div>
-        <div class="ratio-afk" style="width: {{ talk_ratio.afk_percent }}%"></div>
-      </div>
-      <div class="inline">
-        <span class="chip ok">実質 {{ format_duration(summary.effective_seconds) }}</span>
-        <span class="chip warn">AFK {{ format_duration(summary.afk_seconds) }}</span>
-      </div>
-    </div>
-  </article>
-</div>
-
-<div class="grid cols-2" style="margin-top:18px;">
-  <article class="card">
-    <h3>時間帯別ヒートマップ</h3>
-    <div class="heatmap">
-      {% for slot in hourly_heatmap_slots %}
-        <div class="heat" style="background: rgba(156, 79, 47, {{ slot.alpha }});">
-          <span>{{ slot.label }}</span>
-          <strong>{{ format_duration(slot.talk_seconds) }}</strong>
+        <div class="empty-panel">
+          <strong>比較データがありません</strong>
+          <p>まだサーバー別の統計は蓄積されていません。</p>
         </div>
-      {% endfor %}
-    </div>
-  </article>
-
-  <article class="card">
-    <h3>サーバー別内訳</h3>
-    <div class="table-wrap">
-      <table>
-        <thead>
-          <tr>
-            <th>サーバー</th>
-            <th>通話</th>
-            <th>AFK</th>
-            <th>実質</th>
-          </tr>
-        </thead>
-        <tbody>
-          {% for row in breakdown %}
-            <tr>
-              <td>{{ row.guild_name }}</td>
-              <td>{{ format_duration(row.talk_seconds) }}</td>
-              <td>{{ format_duration(row.afk_seconds) }}</td>
-              <td>{{ format_duration(row.effective_seconds) }}</td>
-            </tr>
-          {% else %}
-            <tr>
-              <td colspan="4">内訳データはまだありません。</td>
-            </tr>
-          {% endfor %}
-        </tbody>
-      </table>
-    </div>
-  </article>
+      {% endif %}
+    </section>
+  </aside>
 </div>
 {% endblock %}

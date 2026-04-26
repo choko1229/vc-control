@@ -4,28 +4,157 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{{ title }} | VC Control</title>
-  <link rel="stylesheet" href="/static/style.css">
-  <script src="/static/app.js" defer></script>
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans:wght@400;500;700&display=swap" rel="stylesheet">
+
+  <script>
+    (() => {
+      const storageKey = "vc-control-theme-preference";
+      const getSystemTheme = () => (
+        window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark"
+      );
+
+      try {
+        const preference = localStorage.getItem(storageKey) || "dark";
+        document.documentElement.dataset.themePreference = preference;
+        document.documentElement.dataset.theme = preference === "system" ? getSystemTheme() : preference;
+      } catch (error) {
+        document.documentElement.dataset.themePreference = "dark";
+        document.documentElement.dataset.theme = "dark";
+      }
+    })();
+  </script>
+
+  <link rel="stylesheet" href="/static/css/theme.css">
+  <link rel="stylesheet" href="/static/css/discord-flat.css">
+
+  {% block head_extra %}{% endblock %}
 </head>
-<body data-page="{{ page_name | default('default') }}" data-guild-id="{{ guild_id | default('') }}" data-root-channel-id="{{ root_channel_id | default('') }}">
-  <div class="shell">
-    <header class="topbar">
-      <div class="brand">
-        <h1>VC Control</h1>
-        <small>Discord ボイスチャンネル管理 Bot / Dashboard</small>
+
+<body
+  data-page="{{ page_name | default('default') }}"
+  data-guild-id="{{ guild_id | default('') }}"
+  data-root-channel-id="{{ root_channel_id | default('') }}"
+  data-current-user-id="{{ current_user_view.id if current_user_view else '' }}"
+>
+  {% if current_user %}
+    <div class="app-shell">
+      <aside class="app-rail">
+        <a href="/dashboard/me" class="rail-brand" title="VC Control">
+          <span class="rail-brand-mark">VC</span>
+        </a>
+
+        <nav class="rail-nav">
+          <a class="rail-link {% if page_name == 'dashboard' %}is-active{% endif %}" href="/dashboard/me" title="ホーム">
+            <span class="rail-link-icon">⌂</span>
+            <span class="rail-link-label">ホーム</span>
+          </a>
+
+          <a class="rail-link {% if page_name == 'stats' %}is-active{% endif %}" href="/dashboard/stats/me" title="統計">
+            <span class="rail-link-icon">▤</span>
+            <span class="rail-link-label">統計</span>
+          </a>
+
+          <a class="rail-link {% if page_name == 'rankings' %}is-active{% endif %}" href="/dashboard/rankings" title="ランキング">
+            <span class="rail-link-icon">#</span>
+            <span class="rail-link-label">順位</span>
+          </a>
+
+          <a class="rail-link {% if page_name == 'user-settings' %}is-active{% endif %}" href="/dashboard/settings" title="ユーザー設定">
+            <span class="rail-link-icon">⚙</span>
+            <span class="rail-link-label">設定</span>
+          </a>
+
+          {% if is_owner %}
+            <a class="rail-link {% if page_name == 'admin' %}is-active{% endif %}" href="/admin" title="アドミン管理">
+              <span class="rail-link-icon">◇</span>
+              <span class="rail-link-label">管理</span>
+            </a>
+          {% endif %}
+        </nav>
+
+        <div class="rail-footer">
+          <a class="rail-link" href="/logout" title="ログアウト">
+            <span class="rail-link-icon">⇠</span>
+            <span class="rail-link-label">終了</span>
+          </a>
+        </div>
+      </aside>
+
+      <div class="app-frame">
+        <header class="frame-header">
+          <div class="frame-header-main">
+            <button type="button" class="mobile-sidebar-button" data-page-sidebar-toggle aria-label="サイドバー切り替え">
+              ☰
+            </button>
+
+            <div class="frame-copy">
+              <span class="frame-eyebrow">{% block header_eyebrow %}VC Control{% endblock %}</span>
+              <h1>{% block header_title %}{{ title }}{% endblock %}</h1>
+              <p>{% block header_subtitle %}{% endblock %}</p>
+            </div>
+          </div>
+
+          <div class="frame-header-actions">
+            {% block header_actions %}{% endblock %}
+
+            {% if current_user_view %}
+              <div class="current-user">
+                <span class="avatar avatar-sm">
+                  {% if current_user_view.avatar_url %}
+                    <img src="{{ current_user_view.avatar_url }}" alt="{{ current_user_view.display_name }}">
+                  {% else %}
+                    <span>{{ current_user_view.initials }}</span>
+                  {% endif %}
+                </span>
+
+                <div class="current-user-copy">
+                  <strong>{{ current_user_view.display_name }}</strong>
+                  <small>{% if is_owner %}Bot Owner{% else %}ログイン中{% endif %}</small>
+                </div>
+              </div>
+            {% endif %}
+          </div>
+        </header>
+
+        <main class="frame-body">
+          {% block content %}{% endblock %}
+        </main>
       </div>
-      <nav class="nav">
-        {% if current_user %}
-          <a class="secondary" href="/dashboard/me">ホーム</a>
-          <a class="secondary" href="/dashboard/stats/me">自分の通話時間</a>
-          <a class="secondary" href="/dashboard/rankings">ランキング</a>
-          <a class="secondary" href="/logout">ログアウト</a>
-        {% else %}
-          <a href="/login">Discordでログイン</a>
-        {% endif %}
-      </nav>
-    </header>
-    {% block content %}{% endblock %}
-  </div>
+    </div>
+
+    <div class="page-overlay" data-page-overlay hidden></div>
+  {% else %}
+    <div class="auth-shell">
+      <aside class="auth-rail">
+        <div class="rail-brand">
+          <span class="rail-brand-mark">VC</span>
+        </div>
+
+        <div class="auth-rail-copy">
+          <strong>VC Control</strong>
+          <small>Discord VC Dashboard</small>
+        </div>
+      </aside>
+
+      <main class="auth-stage">
+        {{ self.content() }}
+      </main>
+    </div>
+  {% endif %}
+
+  <div id="toast-stack" class="toast-stack" aria-live="polite" aria-atomic="true"></div>
+
+  <script src="/static/js/toast.js" defer></script>
+  <script src="/static/js/theme.js" defer></script>
+  <script src="/static/js/app.js" defer></script>
+  <script src="/static/js/server-settings.js" defer></script>
+  <script src="/static/js/vc-board.js" defer></script>
+  <script src="/static/js/stats.js" defer></script>
+  <script src="/static/js/user-settings.js" defer></script>
+
+  {% block scripts_extra %}{% endblock %}
 </body>
 </html>

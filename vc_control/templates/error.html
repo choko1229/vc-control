@@ -1,21 +1,32 @@
 {% extends "base.html" %}
-{% block content %}
-<section class="page-hero">
-  <h2>{{ title }}</h2>
-  <p>OAuth ログインまたは認証設定の処理で問題が発生しました。</p>
-</section>
+{% set page_name = "error" %}
 
-<article class="card">
-  <div class="alert">{{ error_message }}</div>
-  {% if error_details %}
-    <ul class="stack">
-      {% for item in error_details %}
-        <li>{{ item }}</li>
-      {% endfor %}
-    </ul>
-  {% endif %}
-  <div class="panel-actions">
-    <a href="{{ next_url }}" class="button">{{ next_label }}</a>
+{% block content %}
+<section class="auth-panel">
+  <div class="auth-panel-copy">
+    <span class="frame-eyebrow">エラー</span>
+    <h1>{{ title }}</h1>
+    <p>OAuth 認証またはWeb設定の処理で問題が発生しました。</p>
   </div>
-</article>
+
+  <article class="status-box danger">
+    <strong>詳細</strong>
+    <p>{{ error_message }}</p>
+  </article>
+
+  {% if error_details %}
+    <div class="stack-list">
+      {% for item in error_details %}
+        <article class="status-box warning">
+          <strong>確認事項</strong>
+          <p>{{ item }}</p>
+        </article>
+      {% endfor %}
+    </div>
+  {% endif %}
+
+  <div class="form-actions">
+    <a href="{{ next_url }}" class="button button-primary">{{ next_label }}</a>
+  </div>
+</section>
 {% endblock %}

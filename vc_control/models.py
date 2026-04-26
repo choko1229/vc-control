@@ -221,6 +221,8 @@ class SessionSnapshot:
     team_mode: str
     team_assignments: dict[str, str]
     team_channels: dict[str, int]
+    notice_channel_id: int | None
+    notice_message_id: int | None
     member_order: list[int]
     members: list[SnapshotMember]
 
@@ -241,6 +243,8 @@ class SessionSnapshot:
             "team_mode": self.team_mode,
             "team_assignments": self.team_assignments,
             "team_channels": self.team_channels,
+            "notice_channel_id": self.notice_channel_id,
+            "notice_message_id": self.notice_message_id,
             "member_order": self.member_order,
             "members": [member.to_dict() for member in self.members],
         }
@@ -263,6 +267,8 @@ class SessionSnapshot:
             team_mode=str(payload.get("team_mode", "custom")),
             team_assignments=dict(payload.get("team_assignments", {})),
             team_channels={str(key): int(value) for key, value in dict(payload.get("team_channels", {})).items()},
+            notice_channel_id=int(payload["notice_channel_id"]) if payload.get("notice_channel_id") is not None else None,
+            notice_message_id=int(payload["notice_message_id"]) if payload.get("notice_message_id") is not None else None,
             member_order=[int(item) for item in payload.get("member_order", [])],
             members=[SnapshotMember.from_dict(item) for item in payload.get("members", [])],
         )

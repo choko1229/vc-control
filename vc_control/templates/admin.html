@@ -1,161 +1,430 @@
 {% extends "base.html" %}
+{% set page_name = "admin" %}
+
+{% block header_eyebrow %}サーバー設定{% endblock %}
+{% block header_title %}Bot Owner 管理画面{% endblock %}
+{% block header_subtitle %}Discord のサーバー設定画面に近い構成で、Bot とサーバーごとのVC設定を管理します。{% endblock %}
+{% block header_actions %}
+  {% if selected_guild %}
+    <div class="header-chip">
+      <span class="avatar avatar-xs">
+        {% if selected_guild.icon_url %}
+          <img src="{{ selected_guild.icon_url }}" alt="{{ selected_guild.name }}">
+        {% else %}
+          <span>{{ selected_guild.initials }}</span>
+        {% endif %}
+      </span>
+      <span>{{ selected_guild.name }}</span>
+    </div>
+  {% endif %}
+{% endblock %}
+
 {% block content %}
-<section class="page-hero">
-  <h2>アドミン管理</h2>
-  <p>Bot Owner 専用画面です。設定DB・統計DBの状態をまとめて管理します。</p>
-</section>
+<div class="page-shell">
+  <aside class="page-sidebar">
+    <section class="sidebar-panel">
+      <div class="sidebar-panel-title">対象サーバー</div>
+      <div class="sidebar-list sidebar-list-scroll">
+        {% for guild in bot_guilds %}
+          <a href="/admin?guild_id={{ guild.id }}" class="sidebar-guild-row {% if selected_guild_id == guild.id %}is-active{% endif %}" title="ID: {{ guild.id }}">
+            <span class="avatar avatar-xs">
+              {% if guild.icon_url %}
+                <img src="{{ guild.icon_url }}" alt="{{ guild.name }}">
+              {% else %}
+                <span>{{ guild.initials }}</span>
+              {% endif %}
+            </span>
+            <span class="sidebar-session-copy">
+              <strong>{{ guild.name }}</strong>
+              <small>{{ guild.member_count }} members</small>
+            </span>
+          </a>
+        {% else %}
+          <div class="sidebar-empty">Bot が参加しているサーバーはありません。</div>
+        {% endfor %}
+      </div>
+    </section>
 
-<div class="grid cols-2">
-  <article class="card">
-    <h3>Bot / OAuth 設定</h3>
-    <form method="post" action="/admin/settings">
-      <label>Bot Token
-        <input type="password" name="bot_token" placeholder="変更しない場合は空欄">
-      </label>
-      <label>Discord Client ID
-        <input type="text" name="client_id" value="{{ settings.client_id }}">
-      </label>
-      <label>Discord Client Secret
-        <input type="password" name="client_secret" placeholder="変更しない場合は空欄">
-      </label>
-      <label>Discord Redirect URI
-        <input type="url" name="redirect_uri" value="{{ settings.redirect_uri }}">
-      </label>
-      <label>Dashboard Base URL
-        <input type="url" name="base_url" value="{{ settings.base_url }}">
-      </label>
-      <label>Bot Owner Discord User ID
-        <input type="text" name="owner_user_id" value="{{ settings.owner_user_id }}">
-      </label>
-      <label>Dashboard Host
-        <input type="text" name="dashboard_host" value="{{ settings.dashboard_host }}">
-      </label>
-      <label>Dashboard Port
-        <input type="number" name="dashboard_port" value="{{ settings.dashboard_port }}">
-      </label>
-      <button type="submit">基本設定を保存</button>
-    </form>
-    <div class="footer-note">Bot Token / Client Secret の反映は再起動前提です。</div>
-  </article>
+    <section class="sidebar-panel">
+      <div class="sidebar-panel-title">設定カテゴリ</div>
+      <nav class="sidebar-nav">
+        <a class="sidebar-nav-link" href="#section-global">基本設定</a>
+        <a class="sidebar-nav-link" href="#section-vc">VC設定</a>
+        <a class="sidebar-nav-link" href="#section-team">チーム設定</a>
+        <a class="sidebar-nav-link" href="#section-notify">通知設定</a>
+        <a class="sidebar-nav-link" href="#section-permissions">権限チェック</a>
+        <a class="sidebar-nav-link" href="#section-logs">ログ</a>
+      </nav>
+    </section>
+  </aside>
 
-  <article class="card">
-    <h3>サーバー別設定</h3>
-    <form method="get" action="/admin" class="inline">
-      <label>対象サーバー
-        <select name="guild_id">
-          {% for guild in bot_guilds %}
-            <option value="{{ guild.id }}" {% if selected_guild_id == guild.id %}selected{% endif %}>{{ guild.name }}</option>
-          {% endfor %}
-        </select>
-      </label>
-      <button type="submit" class="secondary">切替</button>
-    </form>
-    {% if selected_guild_id %}
-      <form method="post" action="/admin/guilds/{{ selected_guild_id }}">
-        <label>
-          <input type="checkbox" name="enabled" {% if selected_config and selected_config.enabled %}checked{% endif %}>
-          管理対象として有効化
-        </label>
-        <label>管理カテゴリ
-          <select name="managed_category_id">
-            <option value="">未設定</option>
-            {% for channel in channel_catalog.categories %}
-              <option value="{{ channel.id }}" {% if selected_config and selected_config.managed_category_id == channel.id %}selected{% endif %}>{{ channel.name }}</option>
-            {% endfor %}
-          </select>
-        </label>
-        <label>基点VC
-          <select name="base_voice_channel_id">
-            <option value="">未設定</option>
-            {% for channel in channel_catalog.voice_channels %}
-              <option value="{{ channel.id }}" {% if selected_config and selected_config.base_voice_channel_id == channel.id %}selected{% endif %}>{{ channel.name }}</option>
-            {% endfor %}
-          </select>
-        </label>
-        <label>通知チャンネル
-          <select name="notification_channel_id">
-            <option value="">未設定</option>
-            {% for channel in channel_catalog.text_channels %}
-              <option value="{{ channel.id }}" {% if selected_config and selected_config.notification_channel_id == channel.id %}selected{% endif %}>{{ channel.name }}</option>
-            {% endfor %}
-          </select>
-        </label>
-        <label>空室後の削除予告秒数
-          <input type="number" name="first_empty_notice_sec" value="{{ selected_config.first_empty_notice_sec if selected_config else 30 }}">
-        </label>
-        <label>最終削除秒数
-          <input type="number" name="final_delete_sec" value="{{ selected_config.final_delete_sec if selected_config else 90 }}">
-        </label>
-        <label>チーム初期モード
-          <input type="text" name="team_mode" value="{{ selected_config.team_mode if selected_config else 'custom' }}">
-        </label>
-        <label>チーム初期名 (カンマ区切り)
-          <input type="text" name="team_names" value="{{ selected_config.team_names | join(',') if selected_config else 'A,B,C,D' }}">
-        </label>
-        <button type="submit">サーバー設定を保存</button>
+  <section class="page-main">
+    <section id="section-global" class="content-section">
+      <div class="section-header">
+        <div>
+          <h2>基本設定</h2>
+          <p>Bot / OAuth / ダッシュボードの実行設定です。変更は自動保存されます。</p>
+        </div>
+      </div>
+
+      <form class="flat-form-section" data-auto-save-form data-endpoint="/api/admin/settings">
+        <div class="form-section-header">
+          <strong>Bot資格情報</strong>
+          <span class="save-status" data-save-status>待機中</span>
+        </div>
+        <div class="setting-list">
+          <div class="setting-row">
+            <div class="setting-copy">
+              <label>Bot Token</label>
+              <p>空欄なら現在の暗号化済みTokenを維持します。</p>
+            </div>
+            <div class="setting-control">
+              <input type="password" name="bot_token" placeholder="変更しない場合は空欄">
+            </div>
+          </div>
+          <div class="setting-row">
+            <div class="setting-copy">
+              <label>Discord Client Secret</label>
+              <p>OAuth の Client Secret です。変更時のみ入力してください。</p>
+            </div>
+            <div class="setting-control">
+              <input type="password" name="client_secret" placeholder="変更しない場合は空欄">
+            </div>
+          </div>
+        </div>
+        <div class="form-actions">
+          <button type="submit" class="button button-primary">保存</button>
+        </div>
       </form>
+
+      <form class="flat-form-section" data-auto-save-form data-endpoint="/api/admin/settings">
+        <div class="form-section-header">
+          <strong>OAuth設定</strong>
+          <span class="save-status" data-save-status>待機中</span>
+        </div>
+        <div class="setting-list">
+          <div class="setting-row">
+            <div class="setting-copy">
+              <label>Discord Client ID</label>
+              <p>Discord Developer Portal の Application ID を入力します。</p>
+            </div>
+            <div class="setting-control">
+              <input type="text" name="client_id" value="{{ settings.client_id }}">
+            </div>
+          </div>
+          <div class="setting-row">
+            <div class="setting-copy">
+              <label>Discord Redirect URI</label>
+              <p>Developer Portal 側の Redirect URI と完全一致させてください。</p>
+            </div>
+            <div class="setting-control">
+              <input type="url" name="redirect_uri" value="{{ settings.redirect_uri }}">
+            </div>
+          </div>
+          <div class="setting-row">
+            <div class="setting-copy">
+              <label>Dashboard Base URL</label>
+              <p>外部からアクセスするURLです。bind先のhost/portとは別です。</p>
+            </div>
+            <div class="setting-control">
+              <input type="url" name="base_url" value="{{ settings.base_url }}">
+            </div>
+          </div>
+        </div>
+        <div class="form-actions">
+          <button type="submit" class="button button-primary">保存</button>
+        </div>
+      </form>
+
+      <form class="flat-form-section" data-auto-save-form data-endpoint="/api/admin/settings">
+        <div class="form-section-header">
+          <strong>実行環境</strong>
+          <span class="save-status" data-save-status>待機中</span>
+        </div>
+        <div class="setting-list">
+          <div class="setting-row">
+            <div class="setting-copy">
+              <label>Bot Owner Discord User ID</label>
+              <p>このユーザーだけがアドミン画面へ入れます。</p>
+            </div>
+            <div class="setting-control">
+              <input type="text" name="owner_user_id" value="{{ settings.owner_user_id }}">
+            </div>
+          </div>
+          <div class="setting-row">
+            <div class="setting-copy">
+              <label>Dashboard Host</label>
+              <p>Pterodactyl では通常 `0.0.0.0` を使います。</p>
+            </div>
+            <div class="setting-control">
+              <input type="text" name="dashboard_host" value="{{ settings.dashboard_host }}">
+            </div>
+          </div>
+          <div class="setting-row">
+            <div class="setting-copy">
+              <label>Dashboard Port</label>
+              <p>実際の割当ポートに合わせてください。</p>
+            </div>
+            <div class="setting-control">
+              <input type="number" name="dashboard_port" value="{{ settings.dashboard_port }}">
+            </div>
+          </div>
+        </div>
+        <div class="form-actions">
+          <button type="submit" class="button button-primary">保存</button>
+        </div>
+      </form>
+    </section>
+
+    {% if selected_guild %}
+      <section id="section-vc" class="content-section">
+        <div class="section-header">
+          <div>
+            <h2>VC設定</h2>
+            <p>{{ selected_guild.name }} のVC自動作成と削除動作を設定します。</p>
+          </div>
+        </div>
+
+        <form class="flat-form-section" data-auto-save-form data-endpoint="/api/admin/guilds/{{ selected_guild_id }}/settings">
+          <div class="form-section-header">
+            <strong>基本状態</strong>
+            <span class="save-status" data-save-status>待機中</span>
+          </div>
+          <div class="setting-list">
+            <div class="setting-row">
+              <div class="setting-copy">
+                <label>管理対象として有効化</label>
+                <p>このサーバーをVC自動管理の対象に含めます。</p>
+              </div>
+              <div class="setting-control setting-control-compact">
+                <label class="checkbox-row">
+                  <input type="checkbox" name="enabled" {% if selected_config.enabled %}checked{% endif %}>
+                  <span>有効</span>
+                </label>
+              </div>
+            </div>
+            <div class="setting-row">
+              <div class="setting-copy">
+                <label>管理対象カテゴリ</label>
+                <p>個人VCとチームVCを作成・削除するカテゴリです。</p>
+              </div>
+              <div class="setting-control">
+                <select name="managed_category_id">
+                  <option value="">カテゴリを選択</option>
+                  {% for channel in channel_catalog.categories %}
+                    <option value="{{ channel.id }}" {% if selected_config.managed_category_id|string == channel.id %}selected{% endif %}>{{ channel.icon }} {{ channel.name }}</option>
+                  {% endfor %}
+                </select>
+              </div>
+            </div>
+            <div class="setting-row">
+              <div class="setting-copy">
+                <label>基点VC</label>
+                <p>ユーザーが入ると個人VCを作成または再利用する入口VCです。</p>
+              </div>
+              <div class="setting-control">
+                <select name="base_voice_channel_id">
+                  <option value="">VCを選択</option>
+                  {% for channel in channel_catalog.voice_channels %}
+                    <option value="{{ channel.id }}" {% if selected_config.base_voice_channel_id|string == channel.id %}selected{% endif %}>{{ channel.icon }} {{ channel.name }}</option>
+                  {% endfor %}
+                </select>
+              </div>
+            </div>
+            <div class="setting-row">
+              <div class="setting-copy">
+                <label>削除予告秒数</label>
+                <p>空室後に削除予告を送るまでの秒数です。</p>
+              </div>
+              <div class="setting-control setting-control-inline">
+                <input type="number" name="first_empty_notice_sec" value="{{ selected_config.first_empty_notice_sec }}">
+              </div>
+            </div>
+            <div class="setting-row">
+              <div class="setting-copy">
+                <label>最終削除秒数</label>
+                <p>空室になってから最終的に削除するまでの秒数です。</p>
+              </div>
+              <div class="setting-control setting-control-inline">
+                <input type="number" name="final_delete_sec" value="{{ selected_config.final_delete_sec }}">
+              </div>
+            </div>
+          </div>
+          <div class="form-actions">
+            <button type="submit" class="button button-primary">保存</button>
+          </div>
+        </form>
+      </section>
+
+      <section id="section-team" class="content-section">
+        <div class="section-header">
+          <div>
+            <h2>チーム設定</h2>
+            <p>チームボードの初期値と分割時の命名ルールです。</p>
+          </div>
+        </div>
+
+        <form class="flat-form-section" data-auto-save-form data-endpoint="/api/admin/guilds/{{ selected_guild_id }}/settings">
+          <div class="form-section-header">
+            <strong>チーム初期設定</strong>
+            <span class="save-status" data-save-status>待機中</span>
+          </div>
+          <div class="setting-list">
+            <div class="setting-row">
+              <div class="setting-copy">
+                <label>チームモード</label>
+                <p>カスタム / フルーツ名ランダム / ㌠形式から選びます。</p>
+              </div>
+              <div class="setting-control">
+                <select name="team_mode">
+                  <option value="custom" {% if selected_config.team_mode == 'custom' %}selected{% endif %}>カスタム</option>
+                  <option value="fruit_random" {% if selected_config.team_mode == 'fruit_random' %}selected{% endif %}>フルーツ名ランダム</option>
+                  <option value="cent" {% if selected_config.team_mode == 'cent' %}selected{% endif %}>㌠形式</option>
+                </select>
+              </div>
+            </div>
+            <div class="setting-row">
+              <div class="setting-copy">
+                <label>チーム初期名</label>
+                <p>カンマ区切りで入力します。例: A,B,C,D</p>
+              </div>
+              <div class="setting-control">
+                <input type="text" name="team_names" value="{{ selected_config.team_names | join(',') }}" placeholder="A,B,C,D">
+              </div>
+            </div>
+          </div>
+          <div class="form-actions">
+            <button type="submit" class="button button-primary">保存</button>
+          </div>
+        </form>
+      </section>
+
+      <section id="section-notify" class="content-section">
+        <div class="section-header">
+          <div>
+            <h2>通知設定</h2>
+            <p>通知先チャンネルと権限不足時のフォールバック先を設定します。</p>
+          </div>
+        </div>
+
+        <form class="flat-form-section" data-auto-save-form data-endpoint="/api/admin/guilds/{{ selected_guild_id }}/settings">
+          <div class="form-section-header">
+            <strong>通知チャンネル</strong>
+            <span class="save-status" data-save-status>待機中</span>
+          </div>
+          <div class="setting-list">
+            <div class="setting-row">
+              <div class="setting-copy">
+                <label>通知チャンネル</label>
+                <p>通常のフォールバック通知や重要通知を送るテキストチャンネルです。</p>
+              </div>
+              <div class="setting-control">
+                <select name="notification_channel_id">
+                  <option value="">チャンネルを選択</option>
+                  {% for channel in channel_catalog.text_channels %}
+                    <option value="{{ channel.id }}" {% if selected_config.notification_channel_id|string == channel.id %}selected{% endif %}>{{ channel.icon }} {{ channel.name }}</option>
+                  {% endfor %}
+                </select>
+              </div>
+            </div>
+          </div>
+          <div class="form-actions">
+            <button type="submit" class="button button-primary">保存</button>
+          </div>
+        </form>
+      </section>
     {% else %}
-      <p class="muted">Bot が参加しているサーバーがありません。</p>
+      <section class="content-section">
+        <div class="empty-panel">
+          <strong>サーバーを選択してください</strong>
+          <p>左のサーバー一覧から選ぶと設定画面が表示されます。</p>
+        </div>
+      </section>
     {% endif %}
-  </article>
-</div>
+  </section>
 
-<div class="grid cols-2" style="margin-top:18px;">
-  <article class="card">
-    <h3>最近のセッション履歴</h3>
-    <div class="table-wrap">
-      <table>
-        <thead>
-          <tr>
-            <th>終了日時</th>
-            <th>サーバー</th>
-            <th>VC名</th>
-            <th>通話時間</th>
-            <th>AFK時間</th>
-          </tr>
-        </thead>
-        <tbody>
-          {% for row in recent_sessions %}
-            <tr>
-              <td>{{ row.ended_at }}</td>
-              <td>{{ row.guild_name }}</td>
-              <td>{{ row.root_channel_name }}</td>
-              <td>{{ format_duration(row.total_talk_seconds) }}</td>
-              <td>{{ format_duration(row.total_afk_seconds) }}</td>
-            </tr>
-          {% else %}
-            <tr><td colspan="5">セッション履歴はありません。</td></tr>
-          {% endfor %}
-        </tbody>
-      </table>
-    </div>
-  </article>
+  <aside class="page-detail">
+    <section id="section-permissions" class="content-section">
+      <div class="section-header">
+        <div>
+          <h2>権限チェック</h2>
+          <p>保存を妨げない診断です。必要な権限不足を控えめに表示します。</p>
+        </div>
+      </div>
 
-  <article class="card">
-    <h3>エラーログ</h3>
-    <div class="table-wrap">
-      <table>
-        <thead>
-          <tr>
-            <th>日時</th>
-            <th>ソース</th>
-            <th>メッセージ</th>
-          </tr>
-        </thead>
-        <tbody>
-          {% for row in error_logs %}
-            <tr>
-              <td>{{ row.created_at }}</td>
-              <td>{{ row.source }}</td>
-              <td>{{ row.message }}</td>
-            </tr>
-          {% else %}
-            <tr><td colspan="3">エラーログはありません。</td></tr>
-          {% endfor %}
-        </tbody>
-      </table>
-    </div>
-    <div class="footer-note">総件数: {{ total_logs }} 件 / ページ: {{ page }}</div>
-  </article>
+      <div class="stack-list" data-global-warnings>
+        {% if settings.redirect_uri and recommended_redirect_uri and settings.redirect_uri != recommended_redirect_uri %}
+          <article class="status-box warning">
+            <strong>Redirect URI不一致</strong>
+            <p>現在の設定は <code>{{ settings.redirect_uri }}</code> です。推奨値は <code>{{ recommended_redirect_uri }}</code> です。</p>
+          </article>
+        {% endif %}
+      </div>
+
+      <div class="stack-list" data-diagnostics>
+        {% for item in diagnostics %}
+          <article class="status-box {{ item.level }}">
+            <strong>{{ item.title }}</strong>
+            <p>{{ item.message }}</p>
+          </article>
+        {% else %}
+          <div class="sidebar-empty">診断対象がありません。</div>
+        {% endfor %}
+      </div>
+    </section>
+
+    <section id="section-logs" class="content-section">
+      <div class="section-header">
+        <div>
+          <h2>最近の履歴</h2>
+          <p>最近のセッションとエラーログです。</p>
+        </div>
+      </div>
+
+      <div class="compact-table">
+        {% for row in recent_sessions %}
+          <div class="compact-table-row">
+            <div class="row-primary">
+              <span class="avatar avatar-xs">
+                {% if row.icon_url %}
+                  <img src="{{ row.icon_url }}" alt="{{ row.name }}">
+                {% else %}
+                  <span>{{ row.initials }}</span>
+                {% endif %}
+              </span>
+              <div class="row-copy">
+                <strong>{{ row.guild_name }}</strong>
+                <small>{{ row.root_channel_name }}</small>
+              </div>
+            </div>
+            <div class="stacked-metrics">
+              <span>{{ row.ended_at }}</span>
+              <span>通話 {{ format_duration(row.total_talk_seconds) }}</span>
+            </div>
+          </div>
+        {% else %}
+          <div class="sidebar-empty">セッション履歴はありません。</div>
+        {% endfor %}
+      </div>
+
+      <div class="section-subdivider"></div>
+
+      <div class="compact-table">
+        {% for row in error_logs %}
+          <div class="compact-table-row">
+            <div class="row-copy">
+              <strong>{{ row.source }}</strong>
+              <small>{{ row.created_at }}</small>
+            </div>
+            <div class="stacked-metrics">
+              <span>{{ row.message }}</span>
+            </div>
+          </div>
+        {% else %}
+          <div class="sidebar-empty">エラーログはありません。</div>
+        {% endfor %}
+      </div>
+    </section>
+  </aside>
 </div>
 {% endblock %}

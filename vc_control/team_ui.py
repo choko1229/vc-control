@@ -224,10 +224,12 @@ class RecallUserView(discord.ui.View):
 
 
 class MainSessionControlView(discord.ui.View):
-    def __init__(self, manager: SessionManager, root_channel_id: int) -> None:
+    def __init__(self, manager: SessionManager, root_channel_id: int, management_url: str | None = None) -> None:
         super().__init__(timeout=None)
         self.manager = manager
         self.root_channel_id = root_channel_id
+        if management_url:
+            self.add_item(discord.ui.Button(label="VCを管理", style=discord.ButtonStyle.link, url=management_url))
 
     @discord.ui.button(label="集合", style=discord.ButtonStyle.success)
     async def collect(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
@@ -253,10 +255,13 @@ class MainSessionControlView(discord.ui.View):
 
 
 class TeamPanelView(discord.ui.View):
-    def __init__(self, manager: SessionManager, root_channel_id: int) -> None:
+    def __init__(self, manager: SessionManager, root_channel_id: int, management_url: str | None = None) -> None:
         super().__init__(timeout=None)
         self.manager = manager
         self.root_channel_id = root_channel_id
+        self.management_url = management_url
+        if management_url:
+            self.add_item(discord.ui.Button(label="VCを管理", style=discord.ButtonStyle.link, url=management_url))
 
     @discord.ui.button(label="自分のチーム", style=discord.ButtonStyle.secondary)
     async def my_team(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
@@ -308,14 +313,21 @@ class TeamPanelView(discord.ui.View):
             return
         await interaction.response.send_message(f"分割を実行しました。対象チーム数: {len(result)}", ephemeral=True)
         target_channel = self.manager.resolve_voice_channel(self.root_channel_id) or interaction.channel
+        session = self.manager.get_session_by_root(self.root_channel_id)
+        management_url = None
+        if session is not None:
+            management_url = await self.manager.build_management_url(session.guild_id, session.root_channel_id)
         if target_channel and result:
+            description = "\n".join(result)
+            if management_url:
+                description = f"{description}\n\nVC管理: {management_url}"
             await target_channel.send(
                 embed=discord.Embed(
                     title="チーム分割操作",
-                    description="\n".join(result),
+                    description=description,
                     color=discord.Color.blue(),
                 ),
-                view=MainSessionControlView(self.manager, self.root_channel_id),
+                view=MainSessionControlView(self.manager, self.root_channel_id, management_url=management_url),
             )
 
     @discord.ui.button(label="集合", style=discord.ButtonStyle.success)
