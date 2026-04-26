@@ -45,16 +45,10 @@
   <article class="card">
     <h3>日別通話時間</h3>
     <div class="chart-bars">
-      {% set namespace = namespace(max_talk=1) %}
-      {% for row in daily_chart %}
-        {% if row.talk_seconds > namespace.max_talk %}
-          {% set namespace.max_talk = row.talk_seconds %}
-        {% endif %}
-      {% endfor %}
-      {% for row in daily_chart %}
+      {% for row in daily_chart_rows %}
         <div class="bar-row">
           <span>{{ row.date }}</span>
-          <div class="bar" style="width: {{ ((row.talk_seconds / namespace.max_talk) * 100) | round(2) }}%;"></div>
+          <div class="bar" style="width: {{ row.width_percent }}%;"></div>
           <strong>{{ format_duration(row.talk_seconds) }}</strong>
         </div>
       {% else %}
@@ -65,11 +59,10 @@
 
   <article class="card">
     <h3>通話時間 vs AFK時間</h3>
-    {% set total = summary.talk_seconds if summary.talk_seconds else 1 %}
     <div class="ratio">
       <div class="ratio-track">
-        <div class="ratio-talk" style="width: {{ ((summary.effective_seconds / total) * 100) | round(2) }}%"></div>
-        <div class="ratio-afk" style="width: {{ ((summary.afk_seconds / total) * 100) | round(2) }}%"></div>
+        <div class="ratio-talk" style="width: {{ talk_ratio.effective_percent }}%"></div>
+        <div class="ratio-afk" style="width: {{ talk_ratio.afk_percent }}%"></div>
       </div>
       <div class="inline">
         <span class="chip ok">実質 {{ format_duration(summary.effective_seconds) }}</span>
@@ -83,23 +76,10 @@
   <article class="card">
     <h3>時間帯別ヒートマップ</h3>
     <div class="heatmap">
-      {% set heat = namespace(max_value=1) %}
-      {% for row in hourly_heatmap %}
-        {% if row.talk_seconds > heat.max_value %}
-          {% set heat.max_value = row.talk_seconds %}
-        {% endif %}
-      {% endfor %}
-      {% for hour in range(24) %}
-        {% set found = namespace(item=None) %}
-        {% for row in hourly_heatmap %}
-          {% if row.hour == hour %}
-            {% set found.item = row %}
-          {% endif %}
-        {% endfor %}
-        {% set value = found.item.talk_seconds if found.item else 0 %}
-        <div class="heat" style="background: rgba(156, 79, 47, {{ 0.08 + ((value / heat.max_value) * 0.48) if heat.max_value else 0.08 }});">
-          <span>{{ "%02d:00" % hour }}</span>
-          <strong>{{ format_duration(value) }}</strong>
+      {% for slot in hourly_heatmap_slots %}
+        <div class="heat" style="background: rgba(156, 79, 47, {{ slot.alpha }});">
+          <span>{{ slot.label }}</span>
+          <strong>{{ format_duration(slot.talk_seconds) }}</strong>
         </div>
       {% endfor %}
     </div>

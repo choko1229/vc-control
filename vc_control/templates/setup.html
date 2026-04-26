@@ -3,7 +3,7 @@
 {% block content %}
 <section class="page-hero">
   <h2>初回セットアップ</h2>
-  <p>`SETUP_PASSWORD` で保護された初期設定画面です。完了後、再アクセスは無効になります。</p>
+  <p>`SETUP_PASSWORD` で保護された初期設定画面です。環境変数が未設定でも、未セットアップ時は起動コンソールに自動生成パスワードが表示されます。</p>
 </section>
 <div class="grid cols-2">
   <article class="card">
@@ -22,7 +22,7 @@
         <input type="password" name="client_secret" required>
       </label>
       <label>Discord Redirect URI
-        <input type="url" name="redirect_uri" placeholder="http://127.0.0.1:8000/auth/callback" required>
+        <input type="url" name="redirect_uri" placeholder="http://127.0.0.1:8000/callback" required>
       </label>
       <label>Dashboard Base URL
         <input type="url" name="base_url" placeholder="http://127.0.0.1:8000" required>
@@ -31,20 +31,20 @@
         <input type="text" name="owner_user_id" required>
       </label>
       <label>Dashboard Host
-        <input type="text" name="dashboard_host" value="127.0.0.1" required>
+        <input type="text" name="dashboard_host" value="{{ default_dashboard_host }}" required>
       </label>
       <label>Dashboard Port
-        <input type="number" name="dashboard_port" value="8000" required>
+        <input type="number" name="dashboard_port" value="{{ default_dashboard_port }}" required>
       </label>
       <button type="submit">セットアップを保存</button>
     </form>
   </article>
   <article class="card">
-    <h3>注意事項</h3>
+    <h3>補足事項</h3>
     <div class="stack">
-      <div class="alert">セットアップ完了後、Bot Token と Client Secret は `data/secret.key` を用いて暗号化して保存されます。</div>
-      <div class="alert">初回保存後は `/setup` へ直接アクセスしても開けません。</div>
-      <div class="alert">Bot 起動反映は再起動前提です。セットアップ直後は一度プロセスを再起動してください。</div>
+      <div class="alert">セットアップ完了後、Bot Token と Client Secret は `data/secret.key` を使って暗号化保存されます。</div>
+      <div class="alert">セットアップ完了後は `/setup` へ再アクセスできません。</div>
+      <div class="alert">`SETUP_PASSWORD` を環境変数で指定しない場合は、未セットアップ起動時に安全なランダム値を自動生成して Pterodactyl コンソールへ表示します。</div>
     </div>
   </article>
 </div>

@@ -11,14 +11,48 @@ from urllib.parse import urlencode
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
-from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
+from starlette.templating import Jinja2Templates
 
 from vc_control.bootstrap import AppContainer
 from vc_control.models import GuildConfig, OAuthProfile, SetupPayload
 from vc_control.utils import format_duration, safe_int
+
+
+def _default_dashboard_host() -> str:
+    return os.getenv("DASHBOARD_HOST", "0.0.0.0").strip() or "0.0.0.0"
+
+
+def _default_dashboard_port() -> int:
+    for env_name in ("SERVER_PORT", "PORT", "DASHBOARD_PORT"):
+        value = os.getenv(env_name)
+        if not value:
+            continue
+        try:
+            return int(value)
+        except ValueError:
+            continue
+    return 49162
+
+
+def _validate_templates(template_dir: Path) -> None:
+    forbidden_patterns = ("namespace(", "Namespace")
+    violations: list[str] = []
+    for template_path in sorted(template_dir.glob("*.html")):
+        for lineno, line in enumerate(template_path.read_text(encoding="utf-8").splitlines(), start=1):
+            for pattern in forbidden_patterns:
+                if pattern in line:
+                    relative_path = template_path.relative_to(template_dir.parent.parent)
+                    violations.append(f"{relative_path}:{lineno}: {pattern}")
+    if violations:
+        details = "\n".join(violations)
+        raise RuntimeError(
+            "Jinja2テンプレートに禁止された namespace 利用が残っています。\n"
+            "表示ロジックは Python 側で計算し、テンプレートは表示専用にしてください。\n"
+            f"{details}"
+        )
 
 
 def _sign_ws_token(secret: str, user_id: int) -> str:
@@ -65,7 +99,7 @@ async def _require_profile(request: Request) -> OAuthProfile:
 async def _require_admin(request: Request, container: AppContainer) -> OAuthProfile:
     profile = await _require_profile(request)
     settings = await container.config_repo.get_runtime_settings()
-    if safe_int(settings.get("owner_user_id")) != profile.user_id:
+    if _owner_user_id(settings) != profile.user_id:
         raise HTTPException(status_code=403, detail="Bot Ownerのみ利用できます。")
     return profile
 
@@ -89,6 +123,91 @@ def _serialize_guild_channels(container: AppContainer, guild_id: int) -> dict[st
 
 async def _fetch_runtime_settings(container: AppContainer) -> dict[str, str]:
     return await container.config_repo.get_runtime_settings()
+
+
+def _owner_user_id(settings: dict[str, str]) -> int:
+    return safe_int(settings.get("owner_user_id"))
+
+
+def _oauth_config_error(settings: dict[str, str]) -> str | None:
+    if not settings.get("client_id"):
+        return "Discord Client ID が未設定です。"
+    if not settings.get("client_secret"):
+        return "Discord Client Secret が未設定です。"
+    if not settings.get("redirect_uri"):
+        return "Discord Redirect URI が未設定です。"
+    return None
+
+
+def _recommended_callback_uri(settings: dict[str, str]) -> str | None:
+    base_url = (settings.get("base_url") or "").rstrip("/")
+    if not base_url:
+        return None
+    return f"{base_url}/callback"
+
+
+def _filter_shared_guilds(profile: OAuthProfile, container: AppContainer) -> list[dict[str, Any]]:
+    if container.bot is None:
+        return list(profile.guilds)
+    bot_guild_ids = {guild.id for guild in container.bot.guilds}
+    return [guild for guild in profile.guilds if safe_int(guild.get("id")) in bot_guild_ids]
+
+
+def _build_daily_chart_rows(daily_chart: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    max_talk = max((safe_int(row.get("talk_seconds")) for row in daily_chart), default=0)
+    scale = max(max_talk, 1)
+    rows: list[dict[str, Any]] = []
+    for row in daily_chart:
+        talk_seconds = safe_int(row.get("talk_seconds"))
+        afk_seconds = safe_int(row.get("afk_seconds"))
+        rows.append(
+            {
+                "date": row.get("date", ""),
+                "talk_seconds": talk_seconds,
+                "afk_seconds": afk_seconds,
+                "width_percent": round((talk_seconds / scale) * 100, 2) if talk_seconds else 0.0,
+            }
+        )
+    return rows
+
+
+def _build_talk_ratio(summary: dict[str, Any]) -> dict[str, float]:
+    talk_seconds = safe_int(summary.get("talk_seconds"))
+    afk_seconds = safe_int(summary.get("afk_seconds"))
+    effective_seconds = safe_int(summary.get("effective_seconds"))
+    total = max(talk_seconds, 1)
+    return {
+        "effective_percent": round((effective_seconds / total) * 100, 2) if talk_seconds else 0.0,
+        "afk_percent": round((afk_seconds / total) * 100, 2) if talk_seconds else 0.0,
+    }
+
+
+def _build_hourly_heatmap_slots(hourly_heatmap: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    by_hour: dict[int, dict[str, int]] = {}
+    for row in hourly_heatmap:
+        hour = safe_int(row.get("hour"))
+        if hour < 0 or hour > 23:
+            continue
+        by_hour[hour] = {
+            "talk_seconds": safe_int(row.get("talk_seconds")),
+            "afk_seconds": safe_int(row.get("afk_seconds")),
+        }
+    max_value = max((item["talk_seconds"] for item in by_hour.values()), default=0)
+    scale = max(max_value, 1)
+    slots: list[dict[str, Any]] = []
+    for hour in range(24):
+        item = by_hour.get(hour, {"talk_seconds": 0, "afk_seconds": 0})
+        talk_seconds = item["talk_seconds"]
+        slots.append(
+            {
+                "hour": hour,
+                "label": f"{hour:02d}:00",
+                "talk_seconds": talk_seconds,
+                "afk_seconds": item["afk_seconds"],
+                "alpha": round(0.08 + ((talk_seconds / scale) * 0.48), 4) if max_value else 0.08,
+            }
+        )
+    return slots
 
 
 def _build_auth_url(settings: dict[str, str], state: str) -> str:
@@ -139,7 +258,9 @@ async def _fetch_discord_profile(access_token: str) -> OAuthProfile:
 
 
 def create_app(container: AppContainer) -> FastAPI:
-    templates = Jinja2Templates(directory=str(container.root_dir / "vc_control" / "templates"))
+    template_dir = container.root_dir / "vc_control" / "templates"
+    _validate_templates(template_dir)
+    templates = Jinja2Templates(directory=str(template_dir))
     app = FastAPI(title="VC Control Dashboard")
     session_secret = os.environ.get("SESSION_SECRET_FALLBACK", secrets.token_urlsafe(32))
     app.add_middleware(SessionMiddleware, secret_key=session_secret, same_site="lax")
@@ -148,32 +269,77 @@ def create_app(container: AppContainer) -> FastAPI:
     app.state.templates = templates
     app.state.ws_secret = session_secret
 
-    def render(request: Request, template_name: str, context: dict[str, Any], status_code: int = 200) -> HTMLResponse:
+    def render(
+        request: Request,
+        template_name: str,
+        context: dict[str, Any] | None = None,
+        status_code: int = 200,
+    ) -> HTMLResponse:
         profile = _current_profile(request)
         base_context = {
             "request": request,
             "current_user": profile,
             "app_version": "1.0.0",
         }
-        base_context.update(context)
-        return templates.TemplateResponse(template_name, base_context, status_code=status_code)
+        if context:
+            base_context.update(context)
+        return templates.TemplateResponse(
+            request=request,
+            name=template_name,
+            context=base_context,
+            status_code=status_code,
+        )
 
-    @app.get("/", response_class=HTMLResponse)
-    async def index(request: Request) -> HTMLResponse | RedirectResponse:
+    def render_error(
+        request: Request,
+        title: str,
+        message: str,
+        *,
+        status_code: int,
+        next_url: str = "/login",
+        next_label: str = "ログイン画面へ戻る",
+        details: list[str] | None = None,
+    ) -> HTMLResponse:
+        return render(
+            request,
+            "error.html",
+            {
+                "title": title,
+                "error_message": message,
+                "error_details": details or [],
+                "next_url": next_url,
+                "next_label": next_label,
+            },
+            status_code=status_code,
+        )
+
+    @app.get("/", response_class=HTMLResponse, response_model=None)
+    async def index(request: Request) -> Response:
         if not await container.config_repo.is_setup_complete():
             return RedirectResponse("/setup", status_code=302)
-        if _current_profile(request) is None:
+        profile = _current_profile(request)
+        if profile is None:
             return RedirectResponse("/login", status_code=302)
-        return RedirectResponse("/dashboard/me", status_code=302)
+        settings = await _fetch_runtime_settings(container)
+        destination = "/admin" if _owner_user_id(settings) == profile.user_id else "/dashboard/me"
+        return RedirectResponse(destination, status_code=302)
 
-    @app.get("/setup", response_class=HTMLResponse)
-    async def setup_page(request: Request) -> HTMLResponse:
+    @app.get("/setup", response_class=HTMLResponse, response_model=None)
+    async def setup_page(request: Request) -> Response:
         if await container.config_repo.is_setup_complete():
             raise HTTPException(status_code=404, detail="初回セットアップは無効です。")
-        return render(request, "setup.html", {"title": "初回セットアップ"})
+        return render(
+            request,
+            "setup.html",
+            {
+                "title": "初回セットアップ",
+                "default_dashboard_host": _default_dashboard_host(),
+                "default_dashboard_port": _default_dashboard_port(),
+            },
+        )
 
-    @app.post("/setup")
-    async def submit_setup(request: Request) -> RedirectResponse:
+    @app.post("/setup", response_model=None)
+    async def submit_setup(request: Request) -> Response:
         if await container.config_repo.is_setup_complete():
             raise HTTPException(status_code=404, detail="初回セットアップは無効です。")
         form = await request.form()
@@ -186,65 +352,135 @@ def create_app(container: AppContainer) -> FastAPI:
             redirect_uri=str(form.get("redirect_uri", "")).strip(),
             base_url=str(form.get("base_url", "")).strip(),
             owner_user_id=safe_int(form.get("owner_user_id")),
-            dashboard_host=str(form.get("dashboard_host", "127.0.0.1")).strip(),
-            dashboard_port=safe_int(form.get("dashboard_port"), 8000),
+            dashboard_host=str(form.get("dashboard_host", _default_dashboard_host())).strip(),
+            dashboard_port=safe_int(form.get("dashboard_port"), _default_dashboard_port()),
         )
         if not expected_password or payload.setup_password != expected_password:
             raise HTTPException(status_code=403, detail="セットアップパスワードが正しくありません。")
         await container.config_repo.save_initial_setup(payload, secrets.token_urlsafe(32))
         return RedirectResponse("/login?setup=1", status_code=302)
 
-    @app.get("/login", response_class=HTMLResponse)
-    async def login_page(request: Request) -> HTMLResponse | RedirectResponse:
+    @app.get("/login", response_class=HTMLResponse, response_model=None)
+    async def login_page(request: Request) -> Response:
         if not await container.config_repo.is_setup_complete():
             return RedirectResponse("/setup", status_code=302)
-        if _current_profile(request) is not None:
-            return RedirectResponse("/dashboard/me", status_code=302)
         settings = await _fetch_runtime_settings(container)
+        profile = _current_profile(request)
+        if profile is not None:
+            destination = "/admin" if _owner_user_id(settings) == profile.user_id else "/dashboard/me"
+            return RedirectResponse(destination, status_code=302)
         error = None
-        if not settings.get("client_id") or not settings.get("client_secret"):
-            error = "OAuth設定が未完了です。"
+        config_error = _oauth_config_error(settings)
+        if config_error:
+            error = f"OAuth設定が未完了です。{config_error}"
         elif request.query_params.get("oauth_error"):
-            error = "OAuth設定が不足しているためログインを開始できません。"
-        return render(request, "login.html", {"title": "ログイン", "error": error})
+            error = "OAuth設定が不足しているためログインを開始できません。Redirect URI と Discord Developer Portal の設定も確認してください。"
+        return render(
+            request,
+            "login.html",
+            {
+                "title": "ログイン",
+                "error": error,
+                "configured_redirect_uri": settings.get("redirect_uri", ""),
+                "recommended_redirect_uri": _recommended_callback_uri(settings),
+            },
+        )
 
-    @app.get("/auth/login")
-    async def login(request: Request) -> RedirectResponse:
+    @app.get("/auth/login", response_model=None)
+    async def login(request: Request) -> Response:
         if not await container.config_repo.is_setup_complete():
             return RedirectResponse("/setup", status_code=302)
         settings = await _fetch_runtime_settings(container)
-        if not settings.get("client_id") or not settings.get("client_secret"):
+        if _oauth_config_error(settings):
             return RedirectResponse("/login?oauth_error=1", status_code=302)
         state = secrets.token_urlsafe(24)
         request.session["oauth_state"] = state
         return RedirectResponse(_build_auth_url(settings, state), status_code=302)
 
-    @app.get("/auth/callback")
-    async def auth_callback(request: Request, code: str | None = None, state: str | None = None) -> RedirectResponse:
-        expected_state = request.session.get("oauth_state")
-        if not code or not state or not expected_state or expected_state != state:
-            raise HTTPException(status_code=400, detail="OAuth状態検証に失敗しました。")
+    async def _handle_oauth_callback(request: Request, code: str | None, state: str | None) -> Response:
+        if not await container.config_repo.is_setup_complete():
+            return RedirectResponse("/setup", status_code=302)
+        expected_state = request.session.pop("oauth_state", None)
+        if not code:
+            return render_error(
+                request,
+                "Discord OAuth ログインに失敗しました",
+                "認可コードが受け取れませんでした。もう一度ログインをやり直してください。",
+                status_code=400,
+            )
+        if not state or not expected_state or expected_state != state:
+            return render_error(
+                request,
+                "Discord OAuth ログインに失敗しました",
+                "state の検証に失敗しました。セッションが切れているか、Redirect URI の設定が一致していない可能性があります。",
+                status_code=400,
+                details=["Discord Developer Portal とアプリ設定の Redirect URI を完全一致させてください。"],
+            )
         settings = await _fetch_runtime_settings(container)
+        config_error = _oauth_config_error(settings)
+        if config_error:
+            return render_error(
+                request,
+                "OAuth設定エラー",
+                config_error,
+                status_code=500,
+                next_url="/login",
+                next_label="ログイン画面へ戻る",
+            )
         try:
             token_payload = await _exchange_code(settings, code)
             profile = await _fetch_discord_profile(token_payload["access_token"])
-        except httpx.HTTPError as exc:
+        except (httpx.HTTPError, KeyError, ValueError) as exc:
             container.logger.exception("OAuth認証に失敗しました")
-            raise HTTPException(status_code=502, detail="Discord OAuthに失敗しました。") from exc
+            configured_redirect_uri = settings.get("redirect_uri", "")
+            recommended_redirect_uri = _recommended_callback_uri(settings)
+            details = [
+                "Discord Developer Portal の Redirect URI とアプリの Redirect URI を完全一致させてください。",
+                f"現在のアプリ設定: {configured_redirect_uri or '未設定'}",
+            ]
+            if recommended_redirect_uri:
+                details.append(f"推奨値: {recommended_redirect_uri}")
+            details.append("HTTP と HTTPS が混在していないか確認してください。")
+            return render_error(
+                request,
+                "Discord OAuth ログインに失敗しました",
+                "アクセストークンの取得に失敗しました。Redirect URI、Client ID、Client Secret の設定を確認してください。",
+                status_code=502,
+                details=details,
+            )
+        is_admin = _owner_user_id(settings) == profile.user_id
+        shared_guilds = _filter_shared_guilds(profile, container)
+        if not is_admin and container.bot is not None and not shared_guilds:
+            request.session.pop("oauth_profile", None)
+            return render_error(
+                request,
+                "ログインできません",
+                "Bot が参加している Discord サーバーに所属していないため、このダッシュボードは利用できません。",
+                status_code=403,
+                details=["Bot が参加しているサーバーへ参加しているアカウントでログインしてください。"],
+            )
+        if container.bot is not None:
+            profile.guilds = shared_guilds
         request.session["oauth_profile"] = profile.to_session()
-        request.session.pop("oauth_state", None)
-        return RedirectResponse("/dashboard/me", status_code=302)
+        request.session["shared_guild_ids"] = [safe_int(guild.get("id")) for guild in shared_guilds]
+        return RedirectResponse("/admin" if is_admin else "/dashboard/me", status_code=302)
 
-    @app.get("/auth/logout")
-    async def logout(request: Request) -> RedirectResponse:
+    @app.get("/callback", response_class=HTMLResponse, response_model=None)
+    @app.get("/auth/callback", response_class=HTMLResponse, response_model=None)
+    async def auth_callback(request: Request, code: str | None = None, state: str | None = None) -> Response:
+        return await _handle_oauth_callback(request, code, state)
+
+    @app.get("/logout", response_model=None)
+    @app.get("/auth/logout", response_model=None)
+    async def logout(request: Request) -> Response:
         request.session.clear()
         return RedirectResponse("/login", status_code=302)
 
-    @app.get("/dashboard/me", response_class=HTMLResponse)
-    async def dashboard_me(request: Request) -> HTMLResponse:
+    @app.get("/dashboard/me", response_class=HTMLResponse, response_model=None)
+    async def dashboard_me(request: Request) -> Response:
         profile = await _require_profile(request)
         settings = await _fetch_runtime_settings(container)
-        is_admin = safe_int(settings.get("owner_user_id")) == profile.user_id
+        is_admin = _owner_user_id(settings) == profile.user_id
         sessions = await container.session_manager.list_accessible_sessions(profile.user_id)
         summary = await container.stats_repo.get_user_period_summary(profile.user_id, "all")
         guild_breakdown = await container.stats_repo.get_user_guild_breakdown(profile.user_id, "all")
@@ -261,8 +497,8 @@ def create_app(container: AppContainer) -> FastAPI:
             },
         )
 
-    @app.get("/dashboard/voice/{guild_id}/{root_channel_id}", response_class=HTMLResponse)
-    async def voice_dashboard(request: Request, guild_id: int, root_channel_id: int) -> HTMLResponse:
+    @app.get("/dashboard/voice/{guild_id}/{root_channel_id}", response_class=HTMLResponse, response_model=None)
+    async def voice_dashboard(request: Request, guild_id: int, root_channel_id: int) -> Response:
         profile = await _require_profile(request)
         session = container.session_manager.get_session_by_root(root_channel_id)
         if session is None or session.guild_id != guild_id:
@@ -287,14 +523,17 @@ def create_app(container: AppContainer) -> FastAPI:
             },
         )
 
-    @app.get("/dashboard/stats/me", response_class=HTMLResponse)
-    async def my_stats(request: Request, period: str = "all", guild_id: int | None = None) -> HTMLResponse:
+    @app.get("/dashboard/stats/me", response_class=HTMLResponse, response_model=None)
+    async def my_stats(request: Request, period: str = "all", guild_id: int | None = None) -> Response:
         profile = await _require_profile(request)
         summary = await container.stats_repo.get_user_period_summary(profile.user_id, period)
         breakdown = await container.stats_repo.get_user_guild_breakdown(profile.user_id, period)
         known_guilds = await container.stats_repo.get_known_guilds_for_user(profile.user_id)
         daily_chart = await container.stats_repo.get_user_daily_chart(profile.user_id, guild_id)
         hourly_heatmap = await container.stats_repo.get_user_hourly_heatmap(profile.user_id, guild_id)
+        daily_chart_rows = _build_daily_chart_rows(daily_chart)
+        talk_ratio = _build_talk_ratio(summary)
+        hourly_heatmap_slots = _build_hourly_heatmap_slots(hourly_heatmap)
         return render(
             request,
             "stats_me.html",
@@ -305,14 +544,15 @@ def create_app(container: AppContainer) -> FastAPI:
                 "summary": summary,
                 "breakdown": breakdown,
                 "known_guilds": known_guilds,
-                "daily_chart": daily_chart,
-                "hourly_heatmap": hourly_heatmap,
+                "daily_chart_rows": daily_chart_rows,
+                "talk_ratio": talk_ratio,
+                "hourly_heatmap_slots": hourly_heatmap_slots,
                 "format_duration": format_duration,
             },
         )
 
-    @app.get("/dashboard/rankings", response_class=HTMLResponse)
-    async def rankings(request: Request, period: str = "all", guild_id: int | None = None) -> HTMLResponse:
+    @app.get("/dashboard/rankings", response_class=HTMLResponse, response_model=None)
+    async def rankings(request: Request, period: str = "all", guild_id: int | None = None) -> Response:
         profile = await _require_profile(request)
         rankings_data = await container.stats_repo.get_rankings(period=period, guild_id=guild_id, limit=100)
         known_guilds = await container.stats_repo.get_known_guilds_for_user(profile.user_id)
@@ -329,8 +569,8 @@ def create_app(container: AppContainer) -> FastAPI:
             },
         )
 
-    @app.get("/admin", response_class=HTMLResponse)
-    async def admin_page(request: Request, guild_id: int | None = None, page: int = 1) -> HTMLResponse:
+    @app.get("/admin", response_class=HTMLResponse, response_model=None)
+    async def admin_page(request: Request, guild_id: int | None = None, page: int = 1) -> Response:
         profile = await _require_admin(request, container)
         settings = await _fetch_runtime_settings(container)
         guild_configs = await container.config_repo.list_guild_configs()
@@ -363,8 +603,8 @@ def create_app(container: AppContainer) -> FastAPI:
             },
         )
 
-    @app.post("/admin/settings")
-    async def update_admin_settings(request: Request) -> RedirectResponse:
+    @app.post("/admin/settings", response_model=None)
+    async def update_admin_settings(request: Request) -> Response:
         await _require_admin(request, container)
         form = await request.form()
         plain_values = {
@@ -372,8 +612,8 @@ def create_app(container: AppContainer) -> FastAPI:
             "redirect_uri": str(form.get("redirect_uri", "")).strip(),
             "base_url": str(form.get("base_url", "")).strip(),
             "owner_user_id": str(safe_int(form.get("owner_user_id"))),
-            "dashboard_host": str(form.get("dashboard_host", "127.0.0.1")).strip(),
-            "dashboard_port": str(safe_int(form.get("dashboard_port"), 8000)),
+            "dashboard_host": str(form.get("dashboard_host", _default_dashboard_host())).strip(),
+            "dashboard_port": str(safe_int(form.get("dashboard_port"), _default_dashboard_port())),
         }
         secure_values = {
             "bot_token": str(form.get("bot_token", "")).strip(),
@@ -382,8 +622,8 @@ def create_app(container: AppContainer) -> FastAPI:
         await container.config_repo.update_runtime_settings(plain_values, secure_values)
         return RedirectResponse("/admin?saved=1", status_code=302)
 
-    @app.post("/admin/guilds/{guild_id}")
-    async def update_guild_config(request: Request, guild_id: int) -> RedirectResponse:
+    @app.post("/admin/guilds/{guild_id}", response_model=None)
+    async def update_guild_config(request: Request, guild_id: int) -> Response:
         await _require_admin(request, container)
         form = await request.form()
         current = await container.config_repo.get_guild_config(guild_id)

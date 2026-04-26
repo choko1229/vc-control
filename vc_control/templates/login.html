@@ -11,6 +11,12 @@
   {% if request.query_params.get('setup') %}
     <div class="alert">セットアップを保存しました。Bot を利用する前に一度再起動してください。</div>
   {% endif %}
+  {% if configured_redirect_uri %}
+    <div class="footer-note">現在の Redirect URI: <code>{{ configured_redirect_uri }}</code></div>
+  {% endif %}
+  {% if recommended_redirect_uri and configured_redirect_uri != recommended_redirect_uri %}
+    <div class="alert">推奨 Redirect URI は <code>{{ recommended_redirect_uri }}</code> です。Discord Developer Portal 側も完全一致させてください。</div>
+  {% endif %}
   <div class="panel-actions">
     <a href="/auth/login" class="button">Discordでログイン</a>
   </div>

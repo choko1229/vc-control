@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="page-hero">
+  <h2>{{ title }}</h2>
+  <p>OAuth ログインまたは認証設定の処理で問題が発生しました。</p>
+</section>
+
+<article class="card">
+  <div class="alert">{{ error_message }}</div>
+  {% if error_details %}
+    <ul class="stack">
+      {% for item in error_details %}
+        <li>{{ item }}</li>
+      {% endfor %}
+    </ul>
+  {% endif %}
+  <div class="panel-actions">
+    <a href="{{ next_url }}" class="button">{{ next_label }}</a>
+  </div>
+</article>
+{% endblock %}
