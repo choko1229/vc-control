@@ -54,7 +54,6 @@ code {
   height: 100vh;
   display: grid;
   grid-template-columns: var(--rail-width) minmax(0, 1fr);
-  overflow: hidden;
 }
 
 .app-rail {
