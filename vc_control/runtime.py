@@ -187,7 +187,7 @@ class SystemMoveMarker:
     created_at: datetime
 
 
-class WebSocketHub:
+class RealtimeEventBroker:
     def __init__(self) -> None:
         self.connections: dict[str, set[WebSocket]] = {}
         self.lock = asyncio.Lock()
@@ -219,6 +219,9 @@ class WebSocketHub:
                 stale.append(websocket)
         for websocket in stale:
             await self.disconnect(websocket)
+
+
+WebSocketHub = RealtimeEventBroker
 
 
 class SessionManager:
@@ -469,6 +472,12 @@ class SessionManager:
 
         self._register_session(session)
         await self._persist_and_broadcast(session)
+        await self._publish_important_event(
+            "vc_started",
+            "VC開始",
+            f"{session.root_channel_name} が開始されました。",
+            session,
+        )
         self.logger.info("Discord状態からセッションを復元しました: session_key=%s members=%s", session.session_key, len(non_bot_members))
         return session
 
@@ -609,6 +618,16 @@ class SessionManager:
         participant.user_name = member.display_name
         participant.apply_voice_state(state)
         await self._persist_and_broadcast(session)
+        await self._publish_session_event(
+            session,
+            "member_mute_changed",
+            {
+                "user_id": str(member.id),
+                "self_muted": participant.self_muted,
+                "self_deafened": participant.self_deafened,
+                "in_afk_channel": participant.in_afk_channel,
+            },
+        )
 
     async def _join_or_start_session(
         self,
@@ -828,6 +847,12 @@ class SessionManager:
                 ),
             )
         await self._persist_and_broadcast(session)
+        await self._publish_important_event(
+            "vc_started",
+            "VC開始",
+            f"{session.root_channel_name} が開始されました。",
+            session,
+        )
 
     async def _join_existing_session(
         self,
@@ -872,6 +897,7 @@ class SessionManager:
                 ),
             )
         await self._persist_and_broadcast(session)
+        await self._publish_session_event(session, "member_joined", {"user_id": str(member.id)})
 
     async def _leave_session_channel(
         self,
@@ -924,6 +950,7 @@ class SessionManager:
             return
 
         await self._persist_and_broadcast(session)
+        await self._publish_session_event(session, "member_left", {"user_id": str(member.id)})
 
     async def _move_within_session(
         self,
@@ -965,6 +992,15 @@ class SessionManager:
             await self._send_embed(before_channel, leave_embed)
             await self._send_embed(after_channel, join_embed)
         await self._persist_and_broadcast(session)
+        await self._publish_session_event(
+            session,
+            "member_moved",
+            {
+                "user_id": str(member.id),
+                "before_channel_id": str(before_channel.id),
+                "after_channel_id": str(after_channel.id),
+            },
+        )
 
     async def _end_session(self, session: LiveSession) -> None:
         now = utcnow()
@@ -1015,6 +1051,13 @@ class SessionManager:
         session.notice_message_id = None
         end_embed = self._build_end_embed(session, completed)
         await self._send_notification_message(session, end_embed)
+        await self._publish_important_event(
+            "vc_ended",
+            "VC終了",
+            f"{session.root_channel_name} が終了しました。",
+            session,
+            extra_payload={"total_talk_seconds": total_talk, "total_afk_seconds": total_afk},
+        )
         summary_lines = [
             f"開始者: <@{session.starter_user_id}>",
             f"参加者数: {len(session.participants)}人",
@@ -1178,6 +1221,11 @@ class SessionManager:
         else:
             session.team_assignments[target_user_id] = team_name
         await self._persist_and_broadcast(session)
+        await self._publish_session_event(
+            session,
+            "team_changed",
+            {"user_id": str(target_user_id), "team_name": team_name},
+        )
         return f"<@{target_user_id}> を {team_name or '未所属'} に設定しました。"
 
     async def update_team_settings(
@@ -1204,6 +1252,7 @@ class SessionManager:
                 if participant:
                     participant.current_team = None
         await self._persist_and_broadcast(session)
+        await self._publish_session_event(session, "team_settings_changed", {"team_names": session.team_names})
 
     async def split_teams(self, root_channel_id: int, actor_id: int) -> list[str]:
         session = self.sessions.get(root_channel_id)
@@ -1262,6 +1311,7 @@ class SessionManager:
                     ),
                 )
             await self._persist_and_broadcast(session)
+            await self._publish_session_event(session, "teams_split", {"messages": moved_messages})
         return moved_messages
 
     async def assemble_teams(self, root_channel_id: int, actor_id: int) -> list[str]:
@@ -1300,6 +1350,7 @@ class SessionManager:
                     ),
                 )
             await self._persist_and_broadcast(session)
+            await self._publish_session_event(session, "teams_assembled", {"users": moved_users})
         return moved_users
 
     async def recall_member(self, root_channel_id: int, actor_id: int, target_user_id: int) -> str:
@@ -1329,6 +1380,7 @@ class SessionManager:
             discord.Embed(title="呼び戻し", description=message, color=discord.Color.gold()),
         )
         await self._persist_and_broadcast(session)
+        await self._publish_session_event(session, "member_recalled", {"user_id": str(target_user_id)})
         return message
 
     async def update_voice_settings(
@@ -1350,6 +1402,15 @@ class SessionManager:
         )
         session.root_channel_name = name or channel.name
         await self._persist_and_broadcast(session)
+        await self._publish_session_event(
+            session,
+            "voice_settings_changed",
+            {
+                "name": session.root_channel_name,
+                "user_limit": channel.user_limit,
+                "bitrate": channel.bitrate,
+            },
+        )
 
     async def set_member_server_state(
         self,
@@ -1372,6 +1433,11 @@ class SessionManager:
         if deafen is not None:
             await member.edit(deafen=deafen, reason="Web管理画面からのサーバーデafen変更")
         await self._persist_and_broadcast(session)
+        await self._publish_session_event(
+            session,
+            "member_mute_changed",
+            {"user_id": str(target_user_id), "mute": mute, "deafen": deafen},
+        )
 
     def list_sessions(self) -> list[LiveSession]:
         return list(self.sessions.values())
@@ -1553,6 +1619,66 @@ class SessionManager:
     async def _broadcast_global_state(self) -> None:
         payload = {"active_sessions": [session.to_payload() for session in self.sessions.values()]}
         await self.websocket_hub.broadcast("global", "global_state", payload)
+
+    async def _publish_session_event(
+        self,
+        session: LiveSession,
+        event_type: str,
+        payload: dict[str, Any] | None = None,
+    ) -> None:
+        envelope = {
+            "type": event_type,
+            "guild_id": str(session.guild_id),
+            "root_channel_id": str(session.root_channel_id),
+            "session": session.to_payload(),
+            "payload": payload or {},
+        }
+        scopes = {f"session:{session.root_channel_id}", f"guild:{session.guild_id}", "global"}
+        scopes.add(f"user:{session.owner_user_id}")
+        for participant in session.participants.values():
+            scopes.add(f"user:{participant.user_id}")
+        for scope in scopes:
+            await self.websocket_hub.broadcast(scope, "session_event", envelope)
+
+    async def _publish_important_event(
+        self,
+        event_type: str,
+        title: str,
+        message: str,
+        session: LiveSession,
+        *,
+        extra_payload: dict[str, Any] | None = None,
+    ) -> None:
+        payload = {
+            "session": session.to_payload(),
+            **(extra_payload or {}),
+        }
+        try:
+            notification = await self.config_repo.create_notification(
+                event_type=event_type,
+                title=title,
+                message=message,
+                guild_id=session.guild_id,
+                root_channel_id=session.root_channel_id,
+                payload=payload,
+            )
+        except Exception:
+            self.logger.exception("通知センター保存に失敗しました: session_key=%s event_type=%s", session.session_key, event_type)
+            notification = {
+                "id": "",
+                "created_at": utcnow().isoformat(),
+                "event_type": event_type,
+                "title": title,
+                "message": message,
+                "guild_id": str(session.guild_id),
+                "root_channel_id": str(session.root_channel_id),
+                "recipient_user_id": None,
+                "payload": payload,
+                "read_at": None,
+            }
+        envelope = {"type": event_type, "notification": notification, "payload": payload}
+        for scope in {f"session:{session.root_channel_id}", f"guild:{session.guild_id}", "global"}:
+            await self.websocket_hub.broadcast(scope, "important_notification", envelope)
 
     def _register_session(self, session: LiveSession) -> None:
         self.sessions[session.root_channel_id] = session

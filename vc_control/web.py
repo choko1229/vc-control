@@ -1244,6 +1244,14 @@ def create_app(container: AppContainer) -> FastAPI:
         profile = await _require_profile(request)
         return JSONResponse({"token": _sign_ws_token(app.state.ws_secret, profile.user_id)})
 
+    @app.get("/api/notifications")
+    async def api_notifications(request: Request, limit: int = 30) -> JSONResponse:
+        profile = await _require_profile(request)
+        safe_limit = max(1, min(100, safe_int(limit, 30)))
+        notifications = await container.config_repo.list_notifications(profile.user_id, limit=safe_limit)
+        unread_count = await container.config_repo.count_unread_notifications(profile.user_id)
+        return JSONResponse({"notifications": notifications, "unread_count": unread_count})
+
     async def _voice_state_payload(request: Request, guild_id: int, root_channel_id: int) -> JSONResponse:
         profile = await _require_profile(request)
         state = await _resolve_voice_dashboard_state(container, guild_id, root_channel_id)

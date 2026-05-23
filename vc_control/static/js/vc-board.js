@@ -568,37 +568,20 @@
     await refreshSession();
   }
 
-  async function connectSocket() {
-    const { guildId, rootChannelId } = rootIds();
-    const protocol = window.location.protocol === "https:" ? "wss" : "ws";
-    const tokenPayload = await window.VCApp.api("/api/ws-token");
-    const socket = new WebSocket(
-      `${protocol}://${window.location.host}/ws?token=${encodeURIComponent(tokenPayload.token)}&scopes=${encodeURIComponent(`session:${rootChannelId},guild:${guildId}`)}`,
-    );
-
-    socket.addEventListener("message", (event) => {
-      try {
-        const message = JSON.parse(event.data);
-        if (message.event !== "session_update") return;
-        const session = normalizeSession(message.payload);
-        syncPendingAssignments(session);
-        state.session = session;
-        render(session);
-      } catch (error) {
-        console.warn(error);
-      }
-    });
-
-    socket.addEventListener("close", () => {
-      if (state.reconnectTimerId) {
-        window.clearTimeout(state.reconnectTimerId);
-      }
-      state.reconnectTimerId = window.setTimeout(() => {
-        connectSocket().catch(() => {});
-      }, 3000);
-    });
-
-    state.socket = socket;
+  function handleRealtimeMessage(message) {
+    if (message.event === "session_update") {
+      const session = normalizeSession(message.payload);
+      syncPendingAssignments(session);
+      state.session = session;
+      render(session);
+      return;
+    }
+    if (message.event === "session_event" && message.payload?.session) {
+      const session = normalizeSession(message.payload.session);
+      syncPendingAssignments(session);
+      state.session = session;
+      render(session);
+    }
   }
 
   function startElapsedTicker() {
@@ -743,14 +726,11 @@
     bindDragAndDrop();
     bindClicks();
     bindForms();
+    window.addEventListener("vc:realtime", (event) => handleRealtimeMessage(event.detail));
 
     try {
       await refreshSession();
       startElapsedTicker();
-      connectSocket().catch((error) => {
-        console.error(error);
-        window.VCToast?.warning(error.message || "WebSocket接続に失敗しました。");
-      });
     } catch (error) {
       console.error(error);
       window.VCToast?.error(error.message || "VC情報の取得に失敗しました。");

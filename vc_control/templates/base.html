@@ -100,6 +100,16 @@
           <div class="frame-header-actions">
             {% block header_actions %}{% endblock %}
 
+            <div class="realtime-status" data-realtime-status="connecting" title="Realtime connection">
+              <span class="realtime-status-dot"></span>
+              <span data-realtime-status-label>接続中</span>
+            </div>
+
+            <button type="button" class="notification-button" data-notification-toggle aria-label="通知センター">
+              <span class="notification-icon">🔔</span>
+              <span class="notification-count" data-notification-count hidden>0</span>
+            </button>
+
             {% if current_user_view %}
               <div class="current-user">
                 <span class="avatar avatar-sm">
@@ -126,6 +136,15 @@
     </div>
 
     <div class="page-overlay" data-page-overlay hidden></div>
+    <aside class="notification-drawer" data-notification-drawer hidden>
+      <div class="notification-drawer-header">
+        <strong>通知センター</strong>
+        <button type="button" class="inline-button" data-notification-close>閉じる</button>
+      </div>
+      <div class="notification-list" data-notification-list>
+        <div class="sidebar-empty">通知はありません。</div>
+      </div>
+    </aside>
   {% else %}
     <div class="auth-shell">
       <aside class="auth-rail">
@@ -150,6 +169,7 @@
   <script src="/static/js/toast.js" defer></script>
   <script src="/static/js/theme.js" defer></script>
   <script src="/static/js/app.js" defer></script>
+  <script src="/static/js/realtime.js" defer></script>
   <script src="/static/js/server-settings.js" defer></script>
   <script src="/static/js/vc-board.js" defer></script>
   <script src="/static/js/stats.js" defer></script>

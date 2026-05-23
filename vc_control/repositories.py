@@ -141,8 +141,22 @@ class ConfigRepository:
                     message TEXT NOT NULL,
                     detail TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS notifications (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    created_at TEXT NOT NULL,
+                    event_type TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    message TEXT NOT NULL,
+                    guild_id INTEGER,
+                    root_channel_id INTEGER,
+                    recipient_user_id INTEGER,
+                    payload_json TEXT NOT NULL DEFAULT '{}',
+                    read_at TEXT
+                );
                 CREATE INDEX IF NOT EXISTS idx_error_logs_created_at ON error_logs(created_at DESC);
                 CREATE INDEX IF NOT EXISTS idx_guild_settings_enabled ON guild_settings(enabled);
+                CREATE INDEX IF NOT EXISTS idx_notifications_created_at ON notifications(created_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_notifications_recipient ON notifications(recipient_user_id, read_at);
                 """
             )
             await db.commit()
@@ -378,6 +392,93 @@ class ConfigRepository:
             rows = await cursor.fetchall()
         total = int(total_row["total"]) if total_row else 0
         return ([_row_to_dict(row) or {} for row in rows], total)
+
+    async def create_notification(
+        self,
+        *,
+        event_type: str,
+        title: str,
+        message: str,
+        guild_id: int | None = None,
+        root_channel_id: int | None = None,
+        recipient_user_id: int | None = None,
+        payload: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        created_at = to_iso(utcnow()) or ""
+
+        async def operation(db: aiosqlite.Connection) -> int:
+            cursor = await db.execute(
+                """
+                INSERT INTO notifications(
+                    created_at, event_type, title, message, guild_id, root_channel_id,
+                    recipient_user_id, payload_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    created_at,
+                    event_type,
+                    title,
+                    message,
+                    guild_id,
+                    root_channel_id,
+                    recipient_user_id,
+                    json_dumps(payload or {}),
+                ),
+            )
+            return int(cursor.lastrowid)
+
+        notification_id = await self._run_write(operation)
+        return {
+            "id": str(notification_id),
+            "created_at": created_at,
+            "event_type": event_type,
+            "title": title,
+            "message": message,
+            "guild_id": str(guild_id) if guild_id is not None else None,
+            "root_channel_id": str(root_channel_id) if root_channel_id is not None else None,
+            "recipient_user_id": str(recipient_user_id) if recipient_user_id is not None else None,
+            "payload": payload or {},
+            "read_at": None,
+        }
+
+    async def list_notifications(self, user_id: int, limit: int = 30) -> list[dict[str, Any]]:
+        async with _open_sqlite_connection(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                """
+                SELECT *
+                FROM notifications
+                WHERE recipient_user_id IS NULL OR recipient_user_id = ?
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (user_id, limit),
+            )
+            rows = await cursor.fetchall()
+        result: list[dict[str, Any]] = []
+        for row in rows:
+            item = _row_to_dict(row) or {}
+            item["id"] = str(item["id"])
+            item["guild_id"] = str(item["guild_id"]) if item.get("guild_id") is not None else None
+            item["root_channel_id"] = str(item["root_channel_id"]) if item.get("root_channel_id") is not None else None
+            item["recipient_user_id"] = str(item["recipient_user_id"]) if item.get("recipient_user_id") is not None else None
+            item["payload"] = json_loads(item.pop("payload_json", "{}"), {})
+            result.append(item)
+        return result
+
+    async def count_unread_notifications(self, user_id: int) -> int:
+        async with _open_sqlite_connection(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                """
+                SELECT COUNT(*) AS total
+                FROM notifications
+                WHERE read_at IS NULL AND (recipient_user_id IS NULL OR recipient_user_id = ?)
+                """,
+                (user_id,),
+            )
+            row = await cursor.fetchone()
+        return int(row["total"]) if row else 0
 
 
 class StatsRepository:

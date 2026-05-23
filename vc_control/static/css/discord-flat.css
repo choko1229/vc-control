@@ -244,6 +244,115 @@ code {
   white-space: nowrap;
 }
 
+.realtime-status,
+.notification-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 30px;
+  border: var(--border-width) solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--bg-panel-alt);
+  color: var(--text-secondary);
+}
+
+.realtime-status {
+  padding: 0 10px;
+  font-size: 12px;
+}
+
+.realtime-status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--warning);
+}
+
+.realtime-status[data-realtime-status="connected"] .realtime-status-dot {
+  background: var(--success);
+}
+
+.realtime-status[data-realtime-status="disconnected"] .realtime-status-dot {
+  background: var(--danger);
+}
+
+.notification-button {
+  position: relative;
+  justify-content: center;
+  width: 34px;
+  padding: 0;
+  cursor: pointer;
+}
+
+.notification-icon {
+  font-weight: 700;
+}
+
+.notification-count {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--danger);
+  color: var(--text-primary);
+  font-size: 11px;
+  line-height: 18px;
+  text-align: center;
+}
+
+.notification-drawer {
+  position: fixed;
+  top: var(--header-height);
+  right: 0;
+  bottom: 0;
+  z-index: 42;
+  width: min(380px, calc(100vw - var(--rail-width)));
+  border-left: var(--border-width) solid var(--border-subtle);
+  background: var(--bg-panel);
+  box-shadow: var(--shadow-lg);
+  overflow-y: auto;
+}
+
+.notification-drawer-header,
+.notification-item {
+  border-bottom: var(--border-width) solid var(--border-subtle);
+}
+
+.notification-drawer-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 14px;
+}
+
+.notification-list {
+  display: grid;
+}
+
+.notification-item {
+  display: grid;
+  gap: 5px;
+  padding: 12px 14px;
+}
+
+.notification-item strong {
+  font-size: 13px;
+}
+
+.notification-item p {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.notification-item small {
+  color: var(--text-muted);
+}
+
 .badge.success {
   color: var(--success);
 }
