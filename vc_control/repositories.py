@@ -245,6 +245,7 @@ class ConfigRepository:
             "owner_user_id",
             "dashboard_host",
             "dashboard_port",
+            "timeline_retention_days",
         ]
         secure_keys = ["bot_token", "client_secret", "session_secret"]
         values: dict[str, str] = {}
@@ -569,9 +570,27 @@ class StatsRepository:
                     afk_seconds INTEGER NOT NULL,
                     PRIMARY KEY(date, guild_id, user_id, hour)
                 );
+                CREATE TABLE IF NOT EXISTS timeline_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    created_at TEXT NOT NULL,
+                    session_id TEXT NOT NULL,
+                    guild_id TEXT NOT NULL,
+                    guild_name TEXT NOT NULL,
+                    root_channel_id TEXT NOT NULL,
+                    root_channel_name TEXT NOT NULL,
+                    event_type TEXT NOT NULL,
+                    event_label TEXT NOT NULL,
+                    user_id TEXT,
+                    user_name TEXT,
+                    message TEXT NOT NULL,
+                    payload_json TEXT NOT NULL DEFAULT '{}'
+                );
                 CREATE INDEX IF NOT EXISTS idx_daily_user_stats_user ON daily_user_stats(user_id, date);
                 CREATE INDEX IF NOT EXISTS idx_hourly_user_stats_user ON hourly_user_stats(user_id, date, hour);
                 CREATE INDEX IF NOT EXISTS idx_session_members_user ON session_members(user_id, guild_id);
+                CREATE INDEX IF NOT EXISTS idx_timeline_events_session ON timeline_events(session_id, created_at, id);
+                CREATE INDEX IF NOT EXISTS idx_timeline_events_voice ON timeline_events(guild_id, root_channel_id, created_at);
+                CREATE INDEX IF NOT EXISTS idx_timeline_events_type ON timeline_events(event_type, created_at);
                 """
             )
             await db.commit()
@@ -715,6 +734,132 @@ class StatsRepository:
             )
             rows = await cursor.fetchall()
         return [_row_to_dict(row) or {} for row in rows]
+
+    async def get_completed_session(self, session_id: str) -> dict[str, Any] | None:
+        async with _open_sqlite_connection(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute("SELECT * FROM vc_sessions WHERE session_id = ?", (session_id,))
+            row = await cursor.fetchone()
+        return _row_to_dict(row)
+
+    async def record_timeline_event(
+        self,
+        *,
+        session_id: str,
+        guild_id: str,
+        guild_name: str,
+        root_channel_id: str,
+        root_channel_name: str,
+        event_type: str,
+        event_label: str,
+        message: str,
+        user_id: str | None = None,
+        user_name: str | None = None,
+        payload: dict[str, Any] | None = None,
+        retention_days: int | None = None,
+    ) -> dict[str, Any]:
+        created_at = to_iso(utcnow()) or ""
+
+        async def operation(db: aiosqlite.Connection) -> int:
+            cursor = await db.execute(
+                """
+                INSERT INTO timeline_events(
+                    created_at, session_id, guild_id, guild_name, root_channel_id,
+                    root_channel_name, event_type, event_label, user_id, user_name,
+                    message, payload_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    created_at,
+                    session_id,
+                    guild_id,
+                    guild_name,
+                    root_channel_id,
+                    root_channel_name,
+                    event_type,
+                    event_label,
+                    user_id,
+                    user_name,
+                    message,
+                    json_dumps(payload or {}),
+                ),
+            )
+            if retention_days and retention_days > 0:
+                cutoff = to_iso(utcnow() - timedelta(days=retention_days))
+                await db.execute("DELETE FROM timeline_events WHERE created_at < ?", (cutoff,))
+            return int(cursor.lastrowid)
+
+        event_id = await self._run_write(operation)
+        return {
+            "id": str(event_id),
+            "created_at": created_at,
+            "session_id": session_id,
+            "guild_id": guild_id,
+            "guild_name": guild_name,
+            "root_channel_id": root_channel_id,
+            "root_channel_name": root_channel_name,
+            "event_type": event_type,
+            "event_label": event_label,
+            "user_id": user_id,
+            "user_name": user_name,
+            "message": message,
+            "payload": payload or {},
+        }
+
+    async def list_timeline_events(
+        self,
+        *,
+        session_id: str | None = None,
+        guild_id: str | None = None,
+        root_channel_id: str | None = None,
+        user_id: str | None = None,
+        event_type: str | None = None,
+        date_from: str | None = None,
+        date_to: str | None = None,
+        limit: int = 200,
+    ) -> list[dict[str, Any]]:
+        clauses: list[str] = []
+        params: list[Any] = []
+        if session_id:
+            clauses.append("session_id = ?")
+            params.append(session_id)
+        if guild_id:
+            clauses.append("guild_id = ?")
+            params.append(guild_id)
+        if root_channel_id:
+            clauses.append("root_channel_id = ?")
+            params.append(root_channel_id)
+        if user_id:
+            clauses.append("user_id = ?")
+            params.append(user_id)
+        if event_type:
+            clauses.append("event_type = ?")
+            params.append(event_type)
+        if date_from:
+            clauses.append("created_at >= ?")
+            params.append(date_from)
+        if date_to:
+            clauses.append("created_at <= ?")
+            params.append(date_to)
+        query = "SELECT * FROM timeline_events"
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
+        query += " ORDER BY created_at ASC, id ASC LIMIT ?"
+        params.append(max(1, min(500, int(limit))))
+        async with _open_sqlite_connection(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(query, tuple(params))
+            rows = await cursor.fetchall()
+        result: list[dict[str, Any]] = []
+        for row in rows:
+            item = _row_to_dict(row) or {}
+            item["id"] = str(item["id"])
+            item["guild_id"] = str(item["guild_id"])
+            item["root_channel_id"] = str(item["root_channel_id"])
+            item["user_id"] = str(item["user_id"]) if item.get("user_id") is not None else None
+            item["payload"] = json_loads(item.pop("payload_json", "{}"), {})
+            result.append(item)
+        return result
 
     async def get_rankings(
         self,

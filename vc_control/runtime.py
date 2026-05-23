@@ -16,6 +16,23 @@ from vc_control.repositories import ConfigRepository, StatsRepository
 from vc_control.utils import format_duration, make_session_key, normalize_ids, utcnow
 
 
+TIMELINE_EVENT_LABELS = {
+    "vc_started": "VC開始",
+    "vc_ended": "VC終了",
+    "member_joined": "参加",
+    "member_left": "退出",
+    "member_moved": "移動",
+    "member_mute_changed": "ミュート変更",
+    "teams_split": "チーム分割",
+    "teams_assembled": "集合",
+    "member_recalled": "呼び戻し",
+    "voice_settings_changed": "VC名変更",
+    "team_changed": "チーム変更",
+    "bot_restart_restored": "BOT再起動復元",
+    "scheduled_vc_created": "予約VC作成",
+}
+
+
 @dataclass(slots=True)
 class LiveParticipant:
     user_id: int
@@ -318,7 +335,22 @@ class SessionManager:
                 else:
                     participant.current_channel_id = None
                 session.participants[participant.user_id] = participant
+            self._hydrate_session_live_members(session, guild, root_channel)
             self._register_session(session)
+            management_url = await self.build_management_url(session.guild_id, session.root_channel_id)
+            await self._send_restart_restored_management_panel(session, management_url)
+            await self._persist_and_broadcast(session)
+            await self._record_timeline_event(
+                session,
+                "bot_restart_restored",
+                f"{session.root_channel_name} was restored after bot restart.",
+            )
+            await self._publish_important_event(
+                "bot_restart_restored",
+                "BOT restart restored",
+                f"{session.root_channel_name} was restored after bot restart.",
+                session,
+            )
             self.logger.info("セッションを復元しました: session_key=%s session_id=%s", session.session_key, session.session_id)
 
         for guild in self.bot.guilds:
@@ -336,8 +368,73 @@ class SessionManager:
                 members = self.get_non_bot_members_for_channel(guild, channel)
                 if not members:
                     continue
-                await self._start_session(channel, members[0], members)
+                await self.restore_or_create_session_from_channel(guild, channel, members)
         await self.update_presence()
+
+    def _hydrate_session_live_members(
+        self,
+        session: LiveSession,
+        guild: discord.Guild,
+        root_channel: discord.VoiceChannel,
+    ) -> None:
+        live_members: dict[int, discord.Member] = {}
+        for member in self.get_non_bot_members_for_channel(guild, root_channel):
+            live_members[int(member.id)] = member
+        for channel_id in session.team_channels.values():
+            team_channel = self._resolve_voice_channel(int(channel_id))
+            if team_channel is None:
+                continue
+            for member in self.get_non_bot_members_for_channel(guild, team_channel):
+                live_members[int(member.id)] = member
+
+        now = utcnow()
+        for participant in session.participants.values():
+            participant.current_channel_id = None
+
+        for member_id, member in live_members.items():
+            voice_channel_id = int(member.voice.channel.id) if member.voice and member.voice.channel else int(root_channel.id)
+            participant = session.participants.get(member_id)
+            if participant is None:
+                participant = LiveParticipant(
+                    user_id=member_id,
+                    user_name=member.display_name,
+                    joined_at=session.started_at,
+                    last_transition_at=now,
+                    current_channel_id=voice_channel_id,
+                    current_team=session.team_assignments.get(member_id),
+                )
+                session.participants[member_id] = participant
+                if member_id not in session.member_order:
+                    session.member_order.append(member_id)
+            else:
+                participant.user_name = member.display_name
+                participant.current_channel_id = voice_channel_id
+                participant.last_transition_at = now
+                participant.current_team = participant.current_team or session.team_assignments.get(member_id)
+            if member.voice is not None:
+                participant.apply_voice_state(member.voice)
+
+    async def _send_restart_restored_management_panel(
+        self,
+        session: LiveSession,
+        management_url: str | None,
+    ) -> None:
+        root_channel = self._resolve_voice_channel(session.root_channel_id)
+        if root_channel is None:
+            return
+        from vc_control.team_ui import TeamPanelView
+
+        embed = self._build_management_panel_embed(session, management_url)
+        embed.title = "VC management panel"
+        embed.description = (
+            "This VC session was restored after a bot restart.\n"
+            "Use this new panel if buttons on an older management panel no longer respond."
+        )
+        await self._send_embed(
+            root_channel,
+            embed,
+            view=TeamPanelView(self, session.root_channel_id, management_url=management_url),
+        )
 
     async def get_guild_config(self, guild_id: int) -> GuildConfig | None:
         if not self.guild_configs:
@@ -471,11 +568,18 @@ class SessionManager:
         session = await self.create_session_from_current_channel_state(guild, channel, non_bot_members)
 
         self._register_session(session)
+        management_url = await self.build_management_url(session.guild_id, session.root_channel_id)
+        await self._send_restart_restored_management_panel(session, management_url)
         await self._persist_and_broadcast(session)
+        await self._record_timeline_event(
+            session,
+            "bot_restart_restored",
+            f"{session.root_channel_name} was restored from the current Discord state.",
+        )
         await self._publish_important_event(
-            "vc_started",
-            "VC開始",
-            f"{session.root_channel_name} が開始されました。",
+            "bot_restart_restored",
+            "BOT restart restored",
+            f"{session.root_channel_name} was restored from the current Discord state.",
             session,
         )
         self.logger.info("Discord状態からセッションを復元しました: session_key=%s members=%s", session.session_key, len(non_bot_members))
@@ -618,6 +722,18 @@ class SessionManager:
         participant.user_name = member.display_name
         participant.apply_voice_state(state)
         await self._persist_and_broadcast(session)
+        await self._record_timeline_event(
+            session,
+            "member_mute_changed",
+            f"{member.display_name} voice state changed.",
+            user_id=member.id,
+            user_name=member.display_name,
+            payload={
+                "self_muted": participant.self_muted,
+                "self_deafened": participant.self_deafened,
+                "in_afk_channel": participant.in_afk_channel,
+            },
+        )
         await self._publish_session_event(
             session,
             "member_mute_changed",
@@ -847,6 +963,23 @@ class SessionManager:
                 ),
             )
         await self._persist_and_broadcast(session)
+        await self._record_timeline_event(
+            session,
+            "vc_started",
+            f"{session.root_channel_name} started.",
+            user_id=starter.id,
+            user_name=starter.display_name,
+        )
+        for member in current_members:
+            if member.bot:
+                continue
+            await self._record_timeline_event(
+                session,
+                "member_joined",
+                f"{member.display_name} joined.",
+                user_id=member.id,
+                user_name=member.display_name,
+            )
         await self._publish_important_event(
             "vc_started",
             "VC開始",
@@ -897,6 +1030,13 @@ class SessionManager:
                 ),
             )
         await self._persist_and_broadcast(session)
+        await self._record_timeline_event(
+            session,
+            "member_joined",
+            f"{member.display_name} joined.",
+            user_id=member.id,
+            user_name=member.display_name,
+        )
         await self._publish_session_event(session, "member_joined", {"user_id": str(member.id)})
 
     async def _leave_session_channel(
@@ -946,10 +1086,24 @@ class SessionManager:
             )
 
         if not session.active_participants():
+            await self._record_timeline_event(
+                session,
+                "member_left",
+                f"{member.display_name} left.",
+                user_id=member.id,
+                user_name=member.display_name,
+            )
             await self._end_session(session)
             return
 
         await self._persist_and_broadcast(session)
+        await self._record_timeline_event(
+            session,
+            "member_left",
+            f"{member.display_name} left.",
+            user_id=member.id,
+            user_name=member.display_name,
+        )
         await self._publish_session_event(session, "member_left", {"user_id": str(member.id)})
 
     async def _move_within_session(
@@ -992,6 +1146,14 @@ class SessionManager:
             await self._send_embed(before_channel, leave_embed)
             await self._send_embed(after_channel, join_embed)
         await self._persist_and_broadcast(session)
+        await self._record_timeline_event(
+            session,
+            "member_moved",
+            f"{member.display_name} moved from {before_channel.name} to {after_channel.name}.",
+            user_id=member.id,
+            user_name=member.display_name,
+            payload={"before_channel_id": str(before_channel.id), "after_channel_id": str(after_channel.id)},
+        )
         await self._publish_session_event(
             session,
             "member_moved",
@@ -1051,6 +1213,12 @@ class SessionManager:
         session.notice_message_id = None
         end_embed = self._build_end_embed(session, completed)
         await self._send_notification_message(session, end_embed)
+        await self._record_timeline_event(
+            session,
+            "vc_ended",
+            f"{session.root_channel_name} ended.",
+            payload={"total_talk_seconds": total_talk, "total_afk_seconds": total_afk},
+        )
         await self._publish_important_event(
             "vc_ended",
             "VC終了",
@@ -1221,6 +1389,14 @@ class SessionManager:
         else:
             session.team_assignments[target_user_id] = team_name
         await self._persist_and_broadcast(session)
+        await self._record_timeline_event(
+            session,
+            "team_changed",
+            f"{participant.user_name} team changed to {team_name or 'unassigned'}.",
+            user_id=target_user_id,
+            user_name=participant.user_name,
+            payload={"team_name": team_name},
+        )
         await self._publish_session_event(
             session,
             "team_changed",
@@ -1311,6 +1487,12 @@ class SessionManager:
                     ),
                 )
             await self._persist_and_broadcast(session)
+            await self._record_timeline_event(
+                session,
+                "teams_split",
+                "Teams were split.",
+                payload={"messages": moved_messages},
+            )
             await self._publish_session_event(session, "teams_split", {"messages": moved_messages})
         return moved_messages
 
@@ -1350,6 +1532,12 @@ class SessionManager:
                     ),
                 )
             await self._persist_and_broadcast(session)
+            await self._record_timeline_event(
+                session,
+                "teams_assembled",
+                "Teams were assembled.",
+                payload={"users": moved_users},
+            )
             await self._publish_session_event(session, "teams_assembled", {"users": moved_users})
         return moved_users
 
@@ -1380,6 +1568,13 @@ class SessionManager:
             discord.Embed(title="呼び戻し", description=message, color=discord.Color.gold()),
         )
         await self._persist_and_broadcast(session)
+        await self._record_timeline_event(
+            session,
+            "member_recalled",
+            f"{participant.user_name} was recalled.",
+            user_id=target_user_id,
+            user_name=participant.user_name,
+        )
         await self._publish_session_event(session, "member_recalled", {"user_id": str(target_user_id)})
         return message
 
@@ -1402,6 +1597,16 @@ class SessionManager:
         )
         session.root_channel_name = name or channel.name
         await self._persist_and_broadcast(session)
+        await self._record_timeline_event(
+            session,
+            "voice_settings_changed",
+            f"VC settings changed: {session.root_channel_name}.",
+            payload={
+                "name": session.root_channel_name,
+                "user_limit": channel.user_limit,
+                "bitrate": channel.bitrate,
+            },
+        )
         await self._publish_session_event(
             session,
             "voice_settings_changed",
@@ -1433,6 +1638,14 @@ class SessionManager:
         if deafen is not None:
             await member.edit(deafen=deafen, reason="Web管理画面からのサーバーデafen変更")
         await self._persist_and_broadcast(session)
+        await self._record_timeline_event(
+            session,
+            "member_mute_changed",
+            f"{member.display_name} server voice state changed.",
+            user_id=target_user_id,
+            user_name=member.display_name,
+            payload={"mute": mute, "deafen": deafen},
+        )
         await self._publish_session_event(
             session,
             "member_mute_changed",
@@ -1619,6 +1832,51 @@ class SessionManager:
     async def _broadcast_global_state(self) -> None:
         payload = {"active_sessions": [session.to_payload() for session in self.sessions.values()]}
         await self.websocket_hub.broadcast("global", "global_state", payload)
+
+    async def _timeline_retention_days(self) -> int:
+        raw = await self.config_repo.get_app_setting("timeline_retention_days", "90")
+        try:
+            return max(1, int(raw or "90"))
+        except ValueError:
+            return 90
+
+    async def _record_timeline_event(
+        self,
+        session: LiveSession,
+        event_type: str,
+        message: str,
+        *,
+        user_id: int | None = None,
+        user_name: str | None = None,
+        payload: dict[str, Any] | None = None,
+    ) -> None:
+        try:
+            event = await self.stats_repo.record_timeline_event(
+                session_id=session.session_id,
+                guild_id=str(session.guild_id),
+                guild_name=session.guild_name,
+                root_channel_id=str(session.root_channel_id),
+                root_channel_name=session.root_channel_name,
+                event_type=event_type,
+                event_label=TIMELINE_EVENT_LABELS.get(event_type, event_type),
+                user_id=str(user_id) if user_id is not None else None,
+                user_name=user_name,
+                message=message,
+                payload=payload or {},
+                retention_days=await self._timeline_retention_days(),
+            )
+        except Exception:
+            self.logger.exception("タイムライン保存に失敗しました: session_key=%s event_type=%s", session.session_key, event_type)
+            return
+
+        envelope = {
+            "type": event_type,
+            "guild_id": str(session.guild_id),
+            "root_channel_id": str(session.root_channel_id),
+            "event": event,
+        }
+        for scope in {f"session:{session.root_channel_id}", f"guild:{session.guild_id}", "global"}:
+            await self.websocket_hub.broadcast(scope, "timeline_event", envelope)
 
     async def _publish_session_event(
         self,

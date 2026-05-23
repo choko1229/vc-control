@@ -7,6 +7,7 @@
     socket: null,
     reconnectTimerId: null,
     timerId: null,
+    timelineEvents: [],
   };
 
   function toId(value) {
@@ -187,6 +188,7 @@
       const node = document.querySelector(selector);
       if (node) node.textContent = value;
     });
+
   }
 
   function renderChannelList(session) {
@@ -387,6 +389,42 @@
     });
   }
 
+  function renderTimelineUserFilter(session) {
+    const select = document.querySelector("[data-timeline-user-filter]");
+    if (!select) return;
+    const selected = select.value;
+    const options = session.participants
+      .map((participant) => `<option value="${participant.user_id}">${window.VCApp.escapeHtml(participant.user.display_name)}</option>`)
+      .join("");
+    select.innerHTML = `<option value="">All users</option>${options}`;
+    select.value = selected;
+  }
+
+  function timelineEventMarkup(event) {
+    const created = event.created_at ? new Date(event.created_at).toLocaleString() : "";
+    const actor = event.display_actor || event.user_name || "System";
+    return `
+      <article class="timeline-item" data-timeline-event-id="${window.VCApp.escapeHtml(event.id)}">
+        <div class="timeline-item-meta">
+          <strong>${window.VCApp.escapeHtml(event.event_label || event.event_type)}</strong>
+          <small>${window.VCApp.escapeHtml(created)}</small>
+        </div>
+        <div class="timeline-item-copy">
+          <strong>${window.VCApp.escapeHtml(actor)}</strong>
+          <p>${window.VCApp.escapeHtml(event.message || "")}</p>
+        </div>
+      </article>
+    `;
+  }
+
+  function renderTimeline() {
+    const root = document.querySelector("[data-timeline-list]");
+    if (!root) return;
+    root.innerHTML = state.timelineEvents.length
+      ? state.timelineEvents.map(timelineEventMarkup).join("")
+      : '<div class="sidebar-empty">No timeline events yet.</div>';
+  }
+
   function renderSelectedMember(session) {
     const root = document.querySelector("[data-selected-member]");
     if (!root) return;
@@ -444,6 +482,7 @@
     renderRecallList(session);
     renderSelectedMember(session);
     renderMemberFormSelect(session);
+    renderTimelineUserFilter(session);
 
     const pending = pendingChangeCount(session);
     setNotice(
@@ -502,6 +541,23 @@
     syncPendingAssignments(session);
     state.session = session;
     render(session);
+  }
+
+  async function refreshTimeline() {
+    const { guildId, rootChannelId } = rootIds();
+    const params = new URLSearchParams();
+    const form = document.querySelector("[data-timeline-filters]");
+    if (form) {
+      const formData = new FormData(form);
+      ["user_id", "event_type", "date_from", "date_to"].forEach((key) => {
+        const value = String(formData.get(key) || "").trim();
+        if (value) params.set(key, value);
+      });
+    }
+    const suffix = params.toString() ? `?${params.toString()}` : "";
+    const payload = await window.VCApp.api(voiceApiUrl(guildId, rootChannelId, `/timeline${suffix}`));
+    state.timelineEvents = payload.events || [];
+    renderTimeline();
   }
 
   async function submitVoiceSettings(form) {
@@ -581,6 +637,14 @@
       syncPendingAssignments(session);
       state.session = session;
       render(session);
+      return;
+    }
+    if (message.event === "timeline_event" && message.payload?.event) {
+      const event = message.payload.event;
+      if (!state.timelineEvents.some((item) => item.id === event.id)) {
+        state.timelineEvents.push(event);
+        renderTimeline();
+      }
     }
   }
 
@@ -720,6 +784,17 @@
     });
   }
 
+  document.addEventListener("submit", async (event) => {
+    const form = event.target.closest("[data-timeline-filters]");
+    if (!form || document.body.dataset.page !== "voice") return;
+    event.preventDefault();
+    try {
+      await refreshTimeline();
+    } catch (error) {
+      window.VCToast?.error(error.message || "Timeline refresh failed.");
+    }
+  });
+
   document.addEventListener("DOMContentLoaded", async () => {
     if (document.body.dataset.page !== "voice" || !window.VCApp) return;
 
@@ -730,6 +805,7 @@
 
     try {
       await refreshSession();
+      await refreshTimeline();
       startElapsedTicker();
     } catch (error) {
       console.error(error);

@@ -355,6 +355,35 @@ def _build_hourly_heatmap_slots(hourly_heatmap: list[dict[str, Any]]) -> list[di
     return slots
 
 
+def _build_timeline_query_params(
+    *,
+    user_id: str | None = None,
+    event_type: str | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
+) -> dict[str, str | None]:
+    return {
+        "user_id": str(user_id).strip() if user_id else None,
+        "event_type": str(event_type).strip() if event_type else None,
+        "date_from": str(date_from).strip() if date_from else None,
+        "date_to": str(date_to).strip() if date_to else None,
+    }
+
+
+def _decorate_timeline_events(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    for row in rows:
+        item = dict(row)
+        item["id"] = str(item.get("id") or "")
+        item["guild_id"] = str(item.get("guild_id") or "")
+        item["root_channel_id"] = str(item.get("root_channel_id") or "")
+        item["user_id"] = str(item.get("user_id")) if item.get("user_id") is not None else None
+        item["user_name"] = str(item.get("user_name") or "")
+        item["display_actor"] = item["user_name"] or "System"
+        result.append(item)
+    return result
+
+
 def _build_session_card(container: AppContainer, session_payload: dict[str, Any]) -> dict[str, Any]:
     guild_id = safe_int(session_payload.get("guild_id"))
     guild_name = str(session_payload.get("guild_name") or guild_id)
@@ -1075,6 +1104,37 @@ def create_app(container: AppContainer) -> FastAPI:
             },
         )
 
+    @app.get("/dashboard/sessions/{session_id}", response_class=HTMLResponse, response_model=None)
+    async def session_detail(request: Request, session_id: str, user_id: str | None = None, event_type: str | None = None, date_from: str | None = None, date_to: str | None = None) -> Response:
+        profile = await _require_profile(request)
+        completed = await container.stats_repo.get_completed_session(session_id)
+        if completed is None:
+            raise HTTPException(status_code=404, detail="セッションが見つかりません。")
+        guild_id = safe_int(completed.get("guild_id"))
+        is_admin = await container.session_manager.is_guild_admin(guild_id, profile.user_id)
+        member_ids = {safe_int(item.get("user_id")) for item in await container.stats_repo.list_timeline_events(session_id=session_id)}
+        if not is_admin and profile.user_id not in member_ids and profile.user_id != safe_int(completed.get("started_by")):
+            raise HTTPException(status_code=403, detail="閲覧権限がありません。")
+        filters = _build_timeline_query_params(user_id=user_id, event_type=event_type, date_from=date_from, date_to=date_to)
+        timeline = await container.stats_repo.list_timeline_events(
+            session_id=session_id,
+            user_id=filters["user_id"],
+            event_type=filters["event_type"],
+            date_from=filters["date_from"],
+            date_to=filters["date_to"],
+        )
+        return render(
+            request,
+            "session_detail.html",
+            {
+                "title": "Session Detail",
+                "session": completed,
+                "timeline_events": _decorate_timeline_events(timeline),
+                "filters": filters,
+                "format_duration": format_duration,
+            },
+        )
+
     @app.get("/admin", response_class=HTMLResponse, response_model=None)
     async def admin_page(request: Request, guild_id: int | None = None, page: int = 1) -> Response:
         profile = await _require_admin(request, container)
@@ -1126,6 +1186,7 @@ def create_app(container: AppContainer) -> FastAPI:
             "owner_user_id": str(safe_int(form.get("owner_user_id"))),
             "dashboard_host": str(form.get("dashboard_host", _default_dashboard_host())).strip(),
             "dashboard_port": str(safe_int(form.get("dashboard_port"), _default_dashboard_port())),
+            "timeline_retention_days": str(max(1, safe_int(form.get("timeline_retention_days"), 90))),
         }
         secure_values = {
             "bot_token": str(form.get("bot_token", "")).strip(),
@@ -1169,6 +1230,7 @@ def create_app(container: AppContainer) -> FastAPI:
             "owner_user_id": str(safe_int(payload.get("owner_user_id", current.get("owner_user_id", "0")))),
             "dashboard_host": str(payload.get("dashboard_host", current.get("dashboard_host", _default_dashboard_host()))).strip(),
             "dashboard_port": str(safe_int(payload.get("dashboard_port", current.get("dashboard_port", _default_dashboard_port())))),
+            "timeline_retention_days": str(max(1, safe_int(payload.get("timeline_retention_days", current.get("timeline_retention_days", "90")), 90))),
         }
         secure_values = {
             "bot_token": str(payload.get("bot_token", "")).strip(),
@@ -1292,6 +1354,33 @@ def create_app(container: AppContainer) -> FastAPI:
     @app.get("/api/voice/{guild_id}/{root_channel_id}/state")
     async def session_state_payload(request: Request, guild_id: int, root_channel_id: int) -> JSONResponse:
         return await _voice_state_payload(request, guild_id, root_channel_id)
+
+    @app.get("/api/voice/{guild_id}/{root_channel_id}/timeline")
+    async def api_voice_timeline(
+        request: Request,
+        guild_id: int,
+        root_channel_id: int,
+        user_id: str | None = None,
+        event_type: str | None = None,
+        date_from: str | None = None,
+        date_to: str | None = None,
+    ) -> JSONResponse:
+        profile = await _require_profile(request)
+        guild_id, root_channel_id = normalize_ids(guild_id, root_channel_id)
+        session = await container.session_manager.get_or_restore_session(guild_id, root_channel_id)
+        if session is not None and not await container.session_manager.can_view_session(session, profile.user_id):
+            raise HTTPException(status_code=403, detail="閲覧権限がありません。")
+        filters = _build_timeline_query_params(user_id=user_id, event_type=event_type, date_from=date_from, date_to=date_to)
+        rows = await container.stats_repo.list_timeline_events(
+            session_id=session.session_id if session else None,
+            guild_id=str(guild_id),
+            root_channel_id=str(root_channel_id),
+            user_id=filters["user_id"],
+            event_type=filters["event_type"],
+            date_from=filters["date_from"],
+            date_to=filters["date_to"],
+        )
+        return JSONResponse({"events": _decorate_timeline_events(rows)})
 
     @app.post("/api/voice/{guild_id}/{root_channel_id}/settings")
     async def api_update_voice_settings(request: Request, guild_id: int, root_channel_id: int) -> JSONResponse:

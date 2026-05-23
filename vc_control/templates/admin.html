@@ -169,6 +169,15 @@
               <input type="number" name="dashboard_port" value="{{ settings.dashboard_port }}">
             </div>
           </div>
+          <div class="setting-row">
+            <div class="setting-copy">
+              <label>Timeline Retention Days</label>
+              <p>VC timeline events are kept for this many days.</p>
+            </div>
+            <div class="setting-control">
+              <input type="number" name="timeline_retention_days" min="1" value="{{ settings.timeline_retention_days or '90' }}">
+            </div>
+          </div>
         </div>
         <div class="form-actions">
           <button type="submit" class="button button-primary">保存</button>
@@ -383,7 +392,7 @@
 
       <div class="compact-table">
         {% for row in recent_sessions %}
-          <div class="compact-table-row">
+          <a class="compact-table-row clickable-row" href="/dashboard/sessions/{{ row.session_id }}">
             <div class="row-primary">
               <span class="avatar avatar-xs">
                 {% if row.icon_url %}
@@ -401,7 +410,7 @@
               <span>{{ row.ended_at }}</span>
               <span>通話 {{ format_duration(row.total_talk_seconds) }}</span>
             </div>
-          </div>
+          </a>
         {% else %}
           <div class="sidebar-empty">セッション履歴はありません。</div>
         {% endfor %}

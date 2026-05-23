@@ -141,6 +141,40 @@
         <article class="team-group skeleton-panel"></article>
       </div>
     </section>
+
+    <section id="voice-timeline" class="content-section">
+      <div class="section-header">
+        <div>
+          <h2>Timeline</h2>
+          <p>VC events are appended in realtime and kept in the database.</p>
+        </div>
+      </div>
+
+      <form class="timeline-filter-bar" data-timeline-filters>
+        <select name="user_id" data-timeline-user-filter>
+          <option value="">All users</option>
+        </select>
+        <select name="event_type">
+          <option value="">All events</option>
+          <option value="vc_started">VC start</option>
+          <option value="vc_ended">VC end</option>
+          <option value="member_joined">Join</option>
+          <option value="member_left">Leave</option>
+          <option value="member_mute_changed">Mute change</option>
+          <option value="teams_split">Team split</option>
+          <option value="teams_assembled">Assemble</option>
+          <option value="member_recalled">Recall</option>
+          <option value="voice_settings_changed">VC name/settings</option>
+        </select>
+        <input type="date" name="date_from">
+        <input type="date" name="date_to">
+        <button type="submit" class="button button-secondary">Filter</button>
+      </form>
+
+      <div class="timeline-list" data-timeline-list>
+        <div class="sidebar-empty">No timeline events yet.</div>
+      </div>
+    </section>
   </section>
 
   <aside class="page-detail">
