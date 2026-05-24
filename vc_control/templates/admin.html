@@ -52,6 +52,7 @@
         <a class="sidebar-nav-link" href="#section-vc">VC設定</a>
         <a class="sidebar-nav-link" href="#section-team">チーム設定</a>
         <a class="sidebar-nav-link" href="#section-notify">通知設定</a>
+        <a class="sidebar-nav-link" href="#section-ranking-post">ランキング投稿</a>
         <a class="sidebar-nav-link" href="#section-permissions">権限チェック</a>
         <a class="sidebar-nav-link" href="#section-logs">ログ</a>
       </nav>
@@ -258,6 +259,47 @@
                 <input type="number" name="final_delete_sec" value="{{ selected_config.final_delete_sec }}">
               </div>
             </div>
+            <div class="setting-row">
+              <div class="setting-copy">
+                <label>Solo VC cleanup</label>
+                <p>Auto-created personal VCs with only one non-bot member for a long time can receive invite suggestions.</p>
+              </div>
+              <div class="setting-control">
+                <select name="solo_cleanup_mode">
+                  <option value="notify_only" {% if selected_config.solo_cleanup_mode == 'notify_only' %}selected{% endif %}>Notify only</option>
+                  <option value="delete_warning" {% if selected_config.solo_cleanup_mode == 'delete_warning' %}selected{% endif %}>Warn later</option>
+                  <option value="repeat_notice" {% if selected_config.solo_cleanup_mode == 'repeat_notice' %}selected{% endif %}>Repeat notice</option>
+                  <option value="disabled" {% if selected_config.solo_cleanup_mode == 'disabled' %}selected{% endif %}>Disabled</option>
+                </select>
+              </div>
+            </div>
+            <div class="setting-row">
+              <div class="setting-copy">
+                <label>Solo notice seconds</label>
+                <p>Default is 3600 seconds. The check starts when the personal VC has exactly one non-bot member.</p>
+              </div>
+              <div class="setting-control setting-control-inline">
+                <input type="number" min="60" name="solo_notice_after_sec" value="{{ selected_config.solo_notice_after_sec }}">
+              </div>
+            </div>
+            <div class="setting-row">
+              <div class="setting-copy">
+                <label>Later warning seconds</label>
+                <p>Used when the mode is Warn later.</p>
+              </div>
+              <div class="setting-control setting-control-inline">
+                <input type="number" min="60" name="solo_delete_warning_after_sec" value="{{ selected_config.solo_delete_warning_after_sec }}">
+              </div>
+            </div>
+            <div class="setting-row">
+              <div class="setting-copy">
+                <label>Repeat notice seconds</label>
+                <p>Used when the mode is Repeat notice.</p>
+              </div>
+              <div class="setting-control setting-control-inline">
+                <input type="number" min="300" name="solo_repeat_notice_sec" value="{{ selected_config.solo_repeat_notice_sec }}">
+              </div>
+            </div>
           </div>
           <div class="form-actions">
             <button type="submit" class="button button-primary">保存</button>
@@ -339,6 +381,93 @@
           </div>
           <div class="form-actions">
             <button type="submit" class="button button-primary">保存</button>
+          </div>
+        </form>
+      </section>
+
+      <section id="section-ranking-post" class="content-section">
+        <div class="section-header">
+          <div>
+            <h2>Activity ranking post</h2>
+            <p>Post multiple activity rankings in one Discord Embed.</p>
+          </div>
+        </div>
+
+        <form class="flat-form-section" data-auto-save-form data-endpoint="/api/admin/guilds/{{ selected_guild_id }}/settings">
+          <div class="form-section-header">
+            <strong>Discord Embed settings</strong>
+            <span class="save-status" data-save-status>Waiting</span>
+          </div>
+          <div class="setting-list">
+            <div class="setting-row">
+              <div class="setting-copy">
+                <label>Posting</label>
+                <p>Enable automatic ranking posts for this server.</p>
+              </div>
+              <div class="setting-control">
+                <label class="toggle-line">
+                  <input type="checkbox" name="ranking_post_enabled" {% if selected_config.ranking_post_enabled %}checked{% endif %}>
+                  <span>Enabled</span>
+                </label>
+              </div>
+            </div>
+            <div class="setting-row">
+              <div class="setting-copy">
+                <label>Post channel</label>
+                <p>The text channel where the ranking Embed will be posted.</p>
+              </div>
+              <div class="setting-control">
+                <select name="ranking_post_channel_id">
+                  <option value="">Select channel</option>
+                  {% for channel in channel_catalog.text_channels %}
+                    <option value="{{ channel.id }}" {% if selected_config.ranking_post_channel_id|string == channel.id %}selected{% endif %}>{{ channel.icon }} {{ channel.name }}</option>
+                  {% endfor %}
+                </select>
+              </div>
+            </div>
+            <div class="setting-row">
+              <div class="setting-copy">
+                <label>Frequency</label>
+                <p>Multiple schedules can be enabled. Manual posting is always available.</p>
+              </div>
+              <div class="setting-control weekday-grid">
+                {% for value, label in [("daily","Daily"),("weekly","Weekly"),("monthly","Monthly")] %}
+                  <label><input type="checkbox" name="ranking_post_frequencies" value="{{ value }}" {% if value in selected_config.ranking_post_frequencies %}checked{% endif %}> {{ label }}</label>
+                {% endfor %}
+              </div>
+            </div>
+            <div class="setting-row">
+              <div class="setting-copy">
+                <label>Post time</label>
+                <p>Interpreted in Asia/Tokyo.</p>
+              </div>
+              <div class="setting-control setting-control-inline">
+                <input type="time" name="ranking_post_time" value="{{ selected_config.ranking_post_time }}">
+              </div>
+            </div>
+            <div class="setting-row">
+              <div class="setting-copy">
+                <label>Ranking targets</label>
+                <p>All selected targets are combined into one Embed.</p>
+              </div>
+              <div class="setting-control weekday-grid">
+                {% for value, label in [("top_talkers","Today callers"),("top_hosts","VC hosts"),("team_splits","Team splits"),("night_owls","Night owls")] %}
+                  <label><input type="checkbox" name="ranking_post_targets" value="{{ value }}" {% if value in selected_config.ranking_post_targets %}checked{% endif %}> {{ label }}</label>
+                {% endfor %}
+              </div>
+            </div>
+          </div>
+          <div class="form-actions">
+            <button type="submit" class="button button-primary">Save</button>
+          </div>
+        </form>
+
+        <form method="post" action="/admin/guilds/{{ selected_guild_id }}/rankings/post" class="flat-form-section">
+          <div class="form-section-header">
+            <strong>Manual post</strong>
+          </div>
+          <div class="form-actions">
+            <button type="submit" class="button button-secondary">Post ranking now</button>
           </div>
         </form>
       </section>

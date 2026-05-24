@@ -10,7 +10,7 @@ from typing import Any
 
 import aiosqlite
 
-from vc_control.models import CompletedMember, CompletedSession, GuildConfig, SessionSnapshot, SetupPayload
+from vc_control.models import CompletedMember, CompletedSession, GuildConfig, ScheduledVC, SessionSnapshot, SetupPayload
 from vc_control.security import SecretBox
 from vc_control.utils import from_iso, json_dumps, json_loads, period_cutoff, to_iso, utcnow
 
@@ -121,6 +121,16 @@ class ConfigRepository:
                     notification_channel_id INTEGER,
                     first_empty_notice_sec INTEGER NOT NULL DEFAULT 30,
                     final_delete_sec INTEGER NOT NULL DEFAULT 90,
+                    solo_cleanup_mode TEXT NOT NULL DEFAULT 'notify_only',
+                    solo_notice_after_sec INTEGER NOT NULL DEFAULT 3600,
+                    solo_delete_warning_after_sec INTEGER NOT NULL DEFAULT 1800,
+                    solo_repeat_notice_sec INTEGER NOT NULL DEFAULT 3600,
+                    ranking_post_enabled INTEGER NOT NULL DEFAULT 0,
+                    ranking_post_channel_id INTEGER,
+                    ranking_post_frequencies_json TEXT NOT NULL DEFAULT '[]',
+                    ranking_post_time TEXT NOT NULL DEFAULT '21:00',
+                    ranking_post_targets_json TEXT NOT NULL DEFAULT '["top_talkers", "top_hosts", "team_splits", "night_owls"]',
+                    ranking_post_last_keys_json TEXT NOT NULL DEFAULT '{}',
                     team_mode TEXT NOT NULL DEFAULT 'custom',
                     team_names_json TEXT NOT NULL DEFAULT '["A", "B", "C", "D"]',
                     enabled INTEGER NOT NULL DEFAULT 0,
@@ -153,13 +163,71 @@ class ConfigRepository:
                     payload_json TEXT NOT NULL DEFAULT '{}',
                     read_at TEXT
                 );
+                CREATE TABLE IF NOT EXISTS notification_user_states (
+                    notification_id INTEGER NOT NULL,
+                    user_id INTEGER NOT NULL,
+                    read_at TEXT,
+                    deleted_at TEXT,
+                    PRIMARY KEY(notification_id, user_id),
+                    FOREIGN KEY(notification_id) REFERENCES notifications(id) ON DELETE CASCADE
+                );
+                CREATE TABLE IF NOT EXISTS scheduled_vcs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    guild_id INTEGER NOT NULL,
+                    guild_name TEXT NOT NULL,
+                    creator_user_id INTEGER NOT NULL,
+                    creator_user_name TEXT NOT NULL,
+                    vc_name TEXT NOT NULL,
+                    category_id INTEGER,
+                    user_limit INTEGER NOT NULL DEFAULT 0,
+                    bitrate INTEGER,
+                    mention_type TEXT NOT NULL DEFAULT 'none',
+                    mention_targets_json TEXT NOT NULL DEFAULT '[]',
+                    description TEXT NOT NULL DEFAULT '',
+                    start_at TEXT NOT NULL,
+                    end_at TEXT,
+                    repeat_mode TEXT NOT NULL DEFAULT 'none',
+                    repeat_weekdays_json TEXT NOT NULL DEFAULT '[]',
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    created_channel_id INTEGER,
+                    pre_notice_15_sent INTEGER NOT NULL DEFAULT 0,
+                    pre_notice_5_sent INTEGER NOT NULL DEFAULT 0,
+                    pre_notice_3_sent INTEGER NOT NULL DEFAULT 0
+                );
                 CREATE INDEX IF NOT EXISTS idx_error_logs_created_at ON error_logs(created_at DESC);
                 CREATE INDEX IF NOT EXISTS idx_guild_settings_enabled ON guild_settings(enabled);
                 CREATE INDEX IF NOT EXISTS idx_notifications_created_at ON notifications(created_at DESC);
                 CREATE INDEX IF NOT EXISTS idx_notifications_recipient ON notifications(recipient_user_id, read_at);
+                CREATE INDEX IF NOT EXISTS idx_notification_user_states_user ON notification_user_states(user_id, read_at, deleted_at);
+                CREATE INDEX IF NOT EXISTS idx_scheduled_vcs_status_start ON scheduled_vcs(status, start_at);
+                CREATE INDEX IF NOT EXISTS idx_scheduled_vcs_guild ON scheduled_vcs(guild_id, start_at);
                 """
             )
+            await self._ensure_guild_settings_columns(db)
             await db.commit()
+        await self.purge_old_notifications(days=45)
+
+    async def _ensure_guild_settings_columns(self, db: aiosqlite.Connection) -> None:
+        cursor = await db.execute("PRAGMA table_info(guild_settings)")
+        rows = await cursor.fetchall()
+        existing = {str(row[1]) for row in rows}
+        additions = {
+            "solo_cleanup_mode": "TEXT NOT NULL DEFAULT 'notify_only'",
+            "solo_notice_after_sec": "INTEGER NOT NULL DEFAULT 3600",
+            "solo_delete_warning_after_sec": "INTEGER NOT NULL DEFAULT 1800",
+            "solo_repeat_notice_sec": "INTEGER NOT NULL DEFAULT 3600",
+            "ranking_post_enabled": "INTEGER NOT NULL DEFAULT 0",
+            "ranking_post_channel_id": "INTEGER",
+            "ranking_post_frequencies_json": "TEXT NOT NULL DEFAULT '[]'",
+            "ranking_post_time": "TEXT NOT NULL DEFAULT '21:00'",
+            "ranking_post_targets_json": "TEXT NOT NULL DEFAULT '[\"top_talkers\", \"top_hosts\", \"team_splits\", \"night_owls\"]'",
+            "ranking_post_last_keys_json": "TEXT NOT NULL DEFAULT '{}'",
+        }
+        for column, definition in additions.items():
+            if column not in existing:
+                await db.execute(f"ALTER TABLE guild_settings ADD COLUMN {column} {definition}")
 
     async def _set_app_setting(self, key: str, value: str) -> None:
         now = to_iso(utcnow()) or ""
@@ -294,8 +362,11 @@ class ConfigRepository:
                 INSERT INTO guild_settings(
                     guild_id, guild_name, managed_category_id, base_voice_channel_id,
                     notification_channel_id, first_empty_notice_sec, final_delete_sec,
-                    team_mode, team_names_json, enabled, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    solo_cleanup_mode, solo_notice_after_sec, solo_delete_warning_after_sec,
+                    solo_repeat_notice_sec, ranking_post_enabled, ranking_post_channel_id,
+                    ranking_post_frequencies_json, ranking_post_time, ranking_post_targets_json,
+                    ranking_post_last_keys_json, team_mode, team_names_json, enabled, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(guild_id) DO UPDATE SET
                     guild_name = excluded.guild_name,
                     managed_category_id = excluded.managed_category_id,
@@ -303,6 +374,16 @@ class ConfigRepository:
                     notification_channel_id = excluded.notification_channel_id,
                     first_empty_notice_sec = excluded.first_empty_notice_sec,
                     final_delete_sec = excluded.final_delete_sec,
+                    solo_cleanup_mode = excluded.solo_cleanup_mode,
+                    solo_notice_after_sec = excluded.solo_notice_after_sec,
+                    solo_delete_warning_after_sec = excluded.solo_delete_warning_after_sec,
+                    solo_repeat_notice_sec = excluded.solo_repeat_notice_sec,
+                    ranking_post_enabled = excluded.ranking_post_enabled,
+                    ranking_post_channel_id = excluded.ranking_post_channel_id,
+                    ranking_post_frequencies_json = excluded.ranking_post_frequencies_json,
+                    ranking_post_time = excluded.ranking_post_time,
+                    ranking_post_targets_json = excluded.ranking_post_targets_json,
+                    ranking_post_last_keys_json = excluded.ranking_post_last_keys_json,
                     team_mode = excluded.team_mode,
                     team_names_json = excluded.team_names_json,
                     enabled = excluded.enabled,
@@ -316,12 +397,37 @@ class ConfigRepository:
                     record["notification_channel_id"],
                     record["first_empty_notice_sec"],
                     record["final_delete_sec"],
+                    record["solo_cleanup_mode"],
+                    record["solo_notice_after_sec"],
+                    record["solo_delete_warning_after_sec"],
+                    record["solo_repeat_notice_sec"],
+                    record["ranking_post_enabled"],
+                    record["ranking_post_channel_id"],
+                    json_dumps(record["ranking_post_frequencies_json"]),
+                    record["ranking_post_time"],
+                    json_dumps(record["ranking_post_targets_json"]),
+                    json_dumps(record["ranking_post_last_keys_json"]),
                     record["team_mode"],
                     json_dumps(record["team_names_json"]),
                     record["enabled"],
                     now,
                 ),
             )
+        await self._run_write(operation)
+
+    async def update_ranking_post_last_keys(self, guild_id: int, last_keys: dict[str, str]) -> None:
+        now = to_iso(utcnow()) or ""
+
+        async def operation(db: aiosqlite.Connection) -> None:
+            await db.execute(
+                """
+                UPDATE guild_settings
+                SET ranking_post_last_keys_json = ?, updated_at = ?
+                WHERE guild_id = ?
+                """,
+                (json_dumps(last_keys), now, guild_id),
+            )
+
         await self._run_write(operation)
 
     async def save_session_snapshot(self, snapshot: SessionSnapshot) -> None:
@@ -447,13 +553,19 @@ class ConfigRepository:
             db.row_factory = aiosqlite.Row
             cursor = await db.execute(
                 """
-                SELECT *
-                FROM notifications
-                WHERE recipient_user_id IS NULL OR recipient_user_id = ?
-                ORDER BY id DESC
+                SELECT
+                    n.*,
+                    COALESCE(s.read_at, n.read_at) AS user_read_at,
+                    s.deleted_at AS user_deleted_at
+                FROM notifications n
+                LEFT JOIN notification_user_states s
+                    ON s.notification_id = n.id AND s.user_id = ?
+                WHERE (n.recipient_user_id IS NULL OR n.recipient_user_id = ?)
+                    AND s.deleted_at IS NULL
+                ORDER BY n.id DESC
                 LIMIT ?
                 """,
-                (user_id, limit),
+                (user_id, user_id, limit),
             )
             rows = await cursor.fetchall()
         result: list[dict[str, Any]] = []
@@ -464,6 +576,8 @@ class ConfigRepository:
             item["root_channel_id"] = str(item["root_channel_id"]) if item.get("root_channel_id") is not None else None
             item["recipient_user_id"] = str(item["recipient_user_id"]) if item.get("recipient_user_id") is not None else None
             item["payload"] = json_loads(item.pop("payload_json", "{}"), {})
+            item["read_at"] = item.pop("user_read_at", None)
+            item.pop("user_deleted_at", None)
             result.append(item)
         return result
 
@@ -473,13 +587,260 @@ class ConfigRepository:
             cursor = await db.execute(
                 """
                 SELECT COUNT(*) AS total
-                FROM notifications
-                WHERE read_at IS NULL AND (recipient_user_id IS NULL OR recipient_user_id = ?)
+                FROM notifications n
+                LEFT JOIN notification_user_states s
+                    ON s.notification_id = n.id AND s.user_id = ?
+                WHERE COALESCE(s.read_at, n.read_at) IS NULL
+                    AND s.deleted_at IS NULL
+                    AND (n.recipient_user_id IS NULL OR n.recipient_user_id = ?)
                 """,
-                (user_id,),
+                (user_id, user_id),
             )
             row = await cursor.fetchone()
         return int(row["total"]) if row else 0
+
+    async def mark_notification_read(self, user_id: int, notification_id: int) -> bool:
+        now = to_iso(utcnow()) or ""
+
+        async def operation(db: aiosqlite.Connection) -> bool:
+            cursor = await db.execute(
+                """
+                SELECT id
+                FROM notifications
+                WHERE id = ? AND (recipient_user_id IS NULL OR recipient_user_id = ?)
+                """,
+                (notification_id, user_id),
+            )
+            if await cursor.fetchone() is None:
+                return False
+            await db.execute(
+                """
+                INSERT INTO notification_user_states(notification_id, user_id, read_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(notification_id, user_id) DO UPDATE SET
+                    read_at = excluded.read_at
+                """,
+                (notification_id, user_id, now),
+            )
+            return True
+
+        return bool(await self._run_write(operation))
+
+    async def mark_all_notifications_read(self, user_id: int) -> int:
+        now = to_iso(utcnow()) or ""
+
+        async def operation(db: aiosqlite.Connection) -> int:
+            cursor = await db.execute(
+                """
+                SELECT n.id
+                FROM notifications n
+                LEFT JOIN notification_user_states s
+                    ON s.notification_id = n.id AND s.user_id = ?
+                WHERE (n.recipient_user_id IS NULL OR n.recipient_user_id = ?)
+                    AND s.deleted_at IS NULL
+                    AND COALESCE(s.read_at, n.read_at) IS NULL
+                """,
+                (user_id, user_id),
+            )
+            rows = await cursor.fetchall()
+            notification_ids = [int(row[0]) for row in rows]
+            for item_id in notification_ids:
+                await db.execute(
+                    """
+                    INSERT INTO notification_user_states(notification_id, user_id, read_at)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT(notification_id, user_id) DO UPDATE SET
+                        read_at = excluded.read_at
+                    """,
+                    (item_id, user_id, now),
+                )
+            return len(notification_ids)
+
+        return int(await self._run_write(operation) or 0)
+
+    async def delete_notification_for_user(self, user_id: int, notification_id: int) -> bool:
+        now = to_iso(utcnow()) or ""
+
+        async def operation(db: aiosqlite.Connection) -> bool:
+            cursor = await db.execute(
+                """
+                SELECT id
+                FROM notifications
+                WHERE id = ? AND (recipient_user_id IS NULL OR recipient_user_id = ?)
+                """,
+                (notification_id, user_id),
+            )
+            if await cursor.fetchone() is None:
+                return False
+            await db.execute(
+                """
+                INSERT INTO notification_user_states(notification_id, user_id, deleted_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(notification_id, user_id) DO UPDATE SET
+                    deleted_at = excluded.deleted_at
+                """,
+                (notification_id, user_id, now),
+            )
+            return True
+
+        return bool(await self._run_write(operation))
+
+    async def delete_all_notifications(self) -> int:
+        async def operation(db: aiosqlite.Connection) -> int:
+            cursor = await db.execute("SELECT COUNT(*) AS total FROM notifications")
+            row = await cursor.fetchone()
+            total = int(row[0]) if row else 0
+            await db.execute("DELETE FROM notification_user_states")
+            await db.execute("DELETE FROM notifications")
+            return total
+
+        return int(await self._run_write(operation) or 0)
+
+    async def purge_old_notifications(self, days: int = 45) -> int:
+        cutoff = to_iso(utcnow() - timedelta(days=max(1, days))) or ""
+
+        async def operation(db: aiosqlite.Connection) -> int:
+            cursor = await db.execute("SELECT COUNT(*) AS total FROM notifications WHERE created_at < ?", (cutoff,))
+            row = await cursor.fetchone()
+            total = int(row[0]) if row else 0
+            await db.execute("DELETE FROM notifications WHERE created_at < ?", (cutoff,))
+            return total
+
+        return int(await self._run_write(operation) or 0)
+
+    async def create_scheduled_vc(self, scheduled: ScheduledVC) -> ScheduledVC:
+        record = scheduled.to_record()
+        now = to_iso(utcnow()) or ""
+
+        async def operation(db: aiosqlite.Connection) -> int:
+            cursor = await db.execute(
+                """
+                INSERT INTO scheduled_vcs(
+                    created_at, updated_at, guild_id, guild_name, creator_user_id,
+                    creator_user_name, vc_name, category_id, user_limit, bitrate,
+                    mention_type, mention_targets_json, description, start_at, end_at,
+                    repeat_mode, repeat_weekdays_json, status, created_channel_id,
+                    pre_notice_15_sent, pre_notice_5_sent, pre_notice_3_sent
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    now,
+                    now,
+                    record["guild_id"],
+                    record["guild_name"],
+                    record["creator_user_id"],
+                    record["creator_user_name"],
+                    record["vc_name"],
+                    record["category_id"],
+                    record["user_limit"],
+                    record["bitrate"],
+                    record["mention_type"],
+                    json_dumps(record["mention_targets_json"]),
+                    record["description"],
+                    record["start_at"],
+                    record["end_at"],
+                    record["repeat_mode"],
+                    json_dumps(record["repeat_weekdays_json"]),
+                    record["status"],
+                    record["created_channel_id"],
+                    record["pre_notice_15_sent"],
+                    record["pre_notice_5_sent"],
+                    record["pre_notice_3_sent"],
+                ),
+            )
+            return int(cursor.lastrowid)
+
+        scheduled.id = await self._run_write(operation)
+        scheduled.created_at = from_iso(now)
+        scheduled.updated_at = from_iso(now)
+        return scheduled
+
+    async def list_scheduled_vcs(self, guild_id: int | None = None, limit: int = 100) -> list[ScheduledVC]:
+        clauses: list[str] = []
+        params: list[Any] = []
+        if guild_id is not None:
+            clauses.append("guild_id = ?")
+            params.append(guild_id)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        params.append(limit)
+        async with _open_sqlite_connection(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                f"""
+                SELECT *
+                FROM scheduled_vcs
+                {where}
+                ORDER BY start_at ASC, id ASC
+                LIMIT ?
+                """,
+                params,
+            )
+            rows = await cursor.fetchall()
+        return [ScheduledVC.from_record(_row_to_dict(row) or {}) for row in rows]
+
+    async def list_due_scheduled_vc_starts(self, now: datetime, limit: int = 20) -> list[ScheduledVC]:
+        async with _open_sqlite_connection(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                """
+                SELECT *
+                FROM scheduled_vcs
+                WHERE status = 'pending' AND start_at <= ?
+                ORDER BY start_at ASC, id ASC
+                LIMIT ?
+                """,
+                (to_iso(now), limit),
+            )
+            rows = await cursor.fetchall()
+        return [ScheduledVC.from_record(_row_to_dict(row) or {}) for row in rows]
+
+    async def list_active_scheduled_vcs(self) -> list[ScheduledVC]:
+        async with _open_sqlite_connection(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute("SELECT * FROM scheduled_vcs WHERE status = 'active' ORDER BY end_at ASC, id ASC")
+            rows = await cursor.fetchall()
+        return [ScheduledVC.from_record(_row_to_dict(row) or {}) for row in rows]
+
+    async def update_scheduled_vc_start_result(self, scheduled_id: int, *, channel_id: int, status: str) -> None:
+        now = to_iso(utcnow()) or ""
+
+        async def operation(db: aiosqlite.Connection) -> None:
+            await db.execute(
+                """
+                UPDATE scheduled_vcs
+                SET status = ?, created_channel_id = ?, updated_at = ?,
+                    pre_notice_15_sent = 0, pre_notice_5_sent = 0, pre_notice_3_sent = 0
+                WHERE id = ?
+                """,
+                (status, channel_id, now, scheduled_id),
+            )
+
+        await self._run_write(operation)
+
+    async def update_scheduled_vc_status(self, scheduled_id: int, status: str) -> None:
+        now = to_iso(utcnow()) or ""
+
+        async def operation(db: aiosqlite.Connection) -> None:
+            await db.execute("UPDATE scheduled_vcs SET status = ?, updated_at = ? WHERE id = ?", (status, now, scheduled_id))
+
+        await self._run_write(operation)
+
+    async def mark_scheduled_vc_pre_notice(self, scheduled_id: int, minutes: int) -> None:
+        column = {15: "pre_notice_15_sent", 5: "pre_notice_5_sent", 3: "pre_notice_3_sent"}.get(minutes)
+        if column is None:
+            return
+        now = to_iso(utcnow()) or ""
+
+        async def operation(db: aiosqlite.Connection) -> None:
+            await db.execute(f"UPDATE scheduled_vcs SET {column} = 1, updated_at = ? WHERE id = ?", (now, scheduled_id))
+
+        await self._run_write(operation)
+
+    async def delete_scheduled_vc(self, scheduled_id: int) -> None:
+        async def operation(db: aiosqlite.Connection) -> None:
+            await db.execute("DELETE FROM scheduled_vcs WHERE id = ?", (scheduled_id,))
+
+        await self._run_write(operation)
 
 
 class StatsRepository:
@@ -915,6 +1276,91 @@ class StatsRepository:
             item["effective_seconds"] = max(0, int(item["talk_seconds"]) - int(item["afk_seconds"]))
             result.append(item)
         return result
+
+    async def get_activity_ranking_bundle(self, guild_id: int, period: str = "day", limit: int = 5) -> dict[str, list[dict[str, Any]]]:
+        today = utcnow().date().isoformat()
+        cutoff = period_cutoff(period) or utcnow().date()
+        cutoff_text = cutoff.isoformat()
+        async with _open_sqlite_connection(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            top_talkers_cursor = await db.execute(
+                """
+                SELECT guild_id, guild_name, user_id, user_name,
+                       SUM(talk_seconds) AS talk_seconds,
+                       SUM(afk_seconds) AS afk_seconds
+                FROM daily_user_stats
+                WHERE guild_id = ? AND date = ?
+                GROUP BY guild_id, guild_name, user_id, user_name
+                ORDER BY talk_seconds DESC, afk_seconds ASC
+                LIMIT ?
+                """,
+                (guild_id, today, limit),
+            )
+            top_hosts_cursor = await db.execute(
+                """
+                SELECT started_by AS user_id, started_by_name AS user_name,
+                       COUNT(*) AS session_count,
+                       MAX(guild_name) AS guild_name,
+                       MAX(guild_id) AS guild_id,
+                       SUM(member_count) AS gathered_count
+                FROM (
+                    SELECT s.session_id, s.guild_id, s.guild_name, s.started_by, s.started_by_name,
+                           COUNT(DISTINCT m.user_id) AS member_count
+                    FROM vc_sessions s
+                    LEFT JOIN session_members m ON m.session_id = s.session_id
+                    WHERE s.guild_id = ? AND date(s.started_at) >= ?
+                    GROUP BY s.session_id, s.guild_id, s.guild_name, s.started_by, s.started_by_name
+                )
+                GROUP BY user_id, user_name
+                ORDER BY gathered_count DESC, session_count DESC
+                LIMIT ?
+                """,
+                (guild_id, cutoff_text, limit),
+            )
+            team_splits_cursor = await db.execute(
+                """
+                SELECT user_id, user_name, guild_id, guild_name, COUNT(*) AS split_count
+                FROM timeline_events
+                WHERE guild_id = ? AND event_type = 'teams_split' AND date(created_at) >= ?
+                GROUP BY user_id, user_name, guild_id, guild_name
+                ORDER BY split_count DESC
+                LIMIT ?
+                """,
+                (str(guild_id), cutoff_text, limit),
+            )
+            night_owls_cursor = await db.execute(
+                """
+                SELECT h.guild_id, d.guild_name, h.user_id, d.user_name,
+                       SUM(h.talk_seconds) AS talk_seconds,
+                       SUM(h.afk_seconds) AS afk_seconds
+                FROM hourly_user_stats h
+                LEFT JOIN daily_user_stats d ON d.guild_id = h.guild_id AND d.user_id = h.user_id AND d.date = h.date
+                WHERE h.guild_id = ? AND h.date >= ? AND h.hour BETWEEN 0 AND 4
+                GROUP BY h.guild_id, h.user_id
+                ORDER BY talk_seconds DESC, afk_seconds ASC
+                LIMIT ?
+                """,
+                (guild_id, cutoff_text, limit),
+            )
+            top_talkers = await top_talkers_cursor.fetchall()
+            top_hosts = await top_hosts_cursor.fetchall()
+            team_splits = await team_splits_cursor.fetchall()
+            night_owls = await night_owls_cursor.fetchall()
+
+        def decorate(rows: list[aiosqlite.Row]) -> list[dict[str, Any]]:
+            result: list[dict[str, Any]] = []
+            for index, row in enumerate(rows, start=1):
+                item = _row_to_dict(row) or {}
+                item["rank"] = index
+                result.append(item)
+            return result
+
+        return {
+            "top_talkers": decorate(top_talkers),
+            "top_hosts": decorate(top_hosts),
+            "team_splits": decorate(team_splits),
+            "night_owls": decorate(night_owls),
+        }
 
     async def get_user_period_summary(self, user_id: int, period: str = "all") -> dict[str, Any]:
         cutoff = period_cutoff(period)

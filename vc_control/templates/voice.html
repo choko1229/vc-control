@@ -277,6 +277,55 @@
             <button type="submit" class="button button-primary">状態を変更</button>
           </div>
         </form>
+        <form class="flat-form-section" data-access-settings>
+          <div class="form-section-header">
+            <strong>VC access</strong>
+          </div>
+          <div class="setting-list">
+            <div class="setting-row">
+              <div class="setting-copy">
+                <label>Access mode</label>
+                <p>Invite-only and role-only modes hide this VC from other users.</p>
+              </div>
+              <div class="setting-control">
+                <select name="access_mode">
+                  <option value="public" {% if session.access_mode == 'public' %}selected{% endif %}>Public</option>
+                  <option value="invite" {% if session.access_mode == 'invite' %}selected{% endif %}>Invite only</option>
+                  <option value="role" {% if session.access_mode == 'role' %}selected{% endif %}>Role only</option>
+                </select>
+              </div>
+            </div>
+            <div class="setting-row">
+              <div class="setting-copy">
+                <label>Invited users</label>
+                <p>Used when mode is Invite only.</p>
+              </div>
+              <div class="setting-control">
+                <select name="invited_user_ids" multiple size="6">
+                  {% for member in member_catalog %}
+                    <option value="{{ member.id }}" {% if member.id in session.invited_user_ids %}selected{% endif %}>{{ member.name }} / {{ member.id }}</option>
+                  {% endfor %}
+                </select>
+              </div>
+            </div>
+            <div class="setting-row">
+              <div class="setting-copy">
+                <label>Allowed roles</label>
+                <p>Used when mode is Role only.</p>
+              </div>
+              <div class="setting-control">
+                <select name="access_role_ids" multiple size="6">
+                  {% for role in role_catalog %}
+                    <option value="{{ role.id }}" {% if role.id in session.access_role_ids %}selected{% endif %}>{{ role.name }} / {{ role.id }}</option>
+                  {% endfor %}
+                </select>
+              </div>
+            </div>
+          </div>
+          <div class="form-actions">
+            <button type="submit" class="button button-primary">Save access</button>
+          </div>
+        </form>
       {% else %}
         <div class="detail-card">
           <strong>閲覧モード</strong>
@@ -285,5 +334,38 @@
       {% endif %}
     </section>
   </aside>
+</div>
+
+<nav class="mobile-vc-action-bar" data-mobile-vc-bar aria-label="Mobile VC actions">
+  <button type="button" class="mobile-vc-action" data-action="split">
+    <span>Split</span>
+  </button>
+  <button type="button" class="mobile-vc-action" data-action="assemble">
+    <span>Assemble</span>
+  </button>
+  <button type="button" class="mobile-vc-action" data-mobile-action="save">
+    <span>Save</span>
+  </button>
+  <button type="button" class="mobile-vc-action" data-notification-toggle>
+    <span>Notify</span>
+  </button>
+</nav>
+
+<div class="mobile-member-menu" data-mobile-member-menu hidden>
+  <div class="mobile-member-menu-sheet">
+    <div class="mobile-member-menu-header">
+      <strong data-mobile-member-menu-name>Member</strong>
+      <button type="button" class="inline-button" data-mobile-menu-close>Close</button>
+    </div>
+    <div class="mobile-member-menu-actions">
+      <label>
+        <span>Team</span>
+        <select data-mobile-team-select></select>
+      </label>
+      <button type="button" class="button button-primary" data-mobile-menu-action="move">Move</button>
+      <button type="button" class="button button-secondary" data-mobile-menu-action="recall">Recall</button>
+      <button type="button" class="button button-secondary" data-mobile-menu-action="details">Details</button>
+    </div>
+  </div>
 </div>
 {% endblock %}

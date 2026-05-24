@@ -1,0 +1,280 @@
+{% extends "base.html" %}
+{% set page_name = "reservations" %}
+
+{% block header_eyebrow %}VC Reservation{% endblock %}
+{% block header_title %}VC予約{% endblock %}
+{% block header_subtitle %}指定時刻にVCを作成し、通知と終了時刻の自動削除を行います。{% endblock %}
+
+{% block content %}
+<div class="page-shell">
+  <aside class="page-sidebar">
+    <div class="sidebar-section">
+      <span class="sidebar-label">Servers</span>
+      <nav class="sidebar-nav">
+        {% for guild in guilds %}
+          <a class="sidebar-guild-row {% if selected_guild_id|string == guild.id|string %}is-active{% endif %}" href="/dashboard/reservations?guild_id={{ guild.id }}">
+            <span class="avatar avatar-sm">
+              {% if guild.icon_url %}
+                <img src="{{ guild.icon_url }}" alt="{{ guild.name }}">
+              {% else %}
+                <span>{{ guild.initials }}</span>
+              {% endif %}
+            </span>
+            <span>{{ guild.name }}</span>
+          </a>
+        {% endfor %}
+      </nav>
+    </div>
+  </aside>
+
+  <main class="page-content">
+    {% if selected_guild_id %}
+      <section class="content-section">
+        <div class="section-header">
+          <div>
+            <h2>Create VC now</h2>
+            <p>Create a personal VC or temporary event VC in the managed category.</p>
+          </div>
+        </div>
+
+        {% if selected_config and selected_config.managed_category_id %}
+          <form method="post" action="/dashboard/voice/create" class="flat-form-section">
+            <input type="hidden" name="guild_id" value="{{ selected_guild_id }}">
+            <div class="setting-list">
+              <div class="setting-row">
+                <div class="setting-copy">
+                  <label>VC type</label>
+                  <p>Team VCs cannot be created from the web dashboard.</p>
+                </div>
+                <div class="setting-control">
+                  <select name="vc_type">
+                    <option value="personal">Personal VC</option>
+                    <option value="event">Temporary event VC</option>
+                  </select>
+                </div>
+              </div>
+
+              <div class="setting-row">
+                <div class="setting-copy">
+                  <label>Personal VC owner</label>
+                  <p>Used only for personal VC creation.</p>
+                </div>
+                <div class="setting-control">
+                  <select name="owner_user_id">
+                    <option value="">Select user</option>
+                    {% for member in member_catalog %}
+                      <option value="{{ member.id }}">{{ member.name }} / {{ member.id }}</option>
+                    {% endfor %}
+                  </select>
+                </div>
+              </div>
+
+              <div class="setting-row">
+                <div class="setting-copy">
+                  <label>VC name</label>
+                  <p>Personal VC can leave this empty to use the owner display name.</p>
+                </div>
+                <div class="setting-control">
+                  <input type="text" name="vc_name" placeholder="Optional for personal VC">
+                </div>
+              </div>
+
+              <div class="setting-row">
+                <div class="setting-copy">
+                  <label>Capacity / bitrate</label>
+                  <p>Created under the configured managed category.</p>
+                </div>
+                <div class="setting-control setting-control-inline">
+                  <input type="number" min="0" max="99" name="user_limit" placeholder="Limit">
+                  <input type="number" min="8000" name="bitrate" placeholder="Bitrate">
+                </div>
+              </div>
+
+              <div class="setting-row">
+                <div class="setting-copy">
+                  <label>Event end time</label>
+                  <p>Required only for temporary event VC. The VC is deleted automatically.</p>
+                </div>
+                <div class="setting-control">
+                  <input type="datetime-local" name="end_at">
+                </div>
+              </div>
+
+              <div class="setting-row">
+                <div class="setting-copy">
+                  <label>Description</label>
+                  <p>Shown in creation notifications.</p>
+                </div>
+                <div class="setting-control">
+                  <textarea name="description" rows="3" placeholder="Optional note"></textarea>
+                </div>
+              </div>
+            </div>
+
+            <div class="form-actions">
+              <button type="submit" class="button button-primary">Create VC now</button>
+            </div>
+          </form>
+        {% else %}
+          <div class="empty-state">
+            <strong>Managed category is not configured</strong>
+            <p>Set the managed category in server settings before creating VCs from the web dashboard.</p>
+          </div>
+        {% endif %}
+      </section>
+
+      <section class="content-section">
+        <div class="section-header">
+          <div>
+            <h2>New reservation</h2>
+            <p>Server administrators can create scheduled voice channels.</p>
+          </div>
+        </div>
+
+        <form method="post" action="/dashboard/reservations" class="flat-form-section">
+          <input type="hidden" name="guild_id" value="{{ selected_guild_id }}">
+          <div class="setting-list">
+            <div class="setting-row">
+              <div class="setting-copy">
+                <label>VC name</label>
+                <p>The voice channel name that will be created at start time.</p>
+              </div>
+              <div class="setting-control">
+                <input type="text" name="vc_name" required placeholder="Event VC">
+              </div>
+            </div>
+
+            <div class="setting-row">
+              <div class="setting-copy">
+                <label>Category</label>
+                <p>Select the Discord category for the scheduled VC.</p>
+              </div>
+              <div class="setting-control">
+                <select name="category_id">
+                  <option value="">No category</option>
+                  {% for channel in channel_catalog.categories %}
+                    <option value="{{ channel.id }}">{{ channel.icon }} {{ channel.name }}</option>
+                  {% endfor %}
+                </select>
+              </div>
+            </div>
+
+            <div class="setting-row">
+              <div class="setting-copy">
+                <label>Capacity / bitrate</label>
+                <p>Leave bitrate empty to use Discord defaults.</p>
+              </div>
+              <div class="setting-control setting-control-inline">
+                <input type="number" min="0" max="99" name="user_limit" placeholder="Limit">
+                <input type="number" min="8000" name="bitrate" placeholder="Bitrate">
+              </div>
+            </div>
+
+            <div class="setting-row">
+              <div class="setting-copy">
+                <label>Description</label>
+                <p>Shown in the notification channel and DMs.</p>
+              </div>
+              <div class="setting-control">
+                <textarea name="description" rows="3" placeholder="Agenda or notes"></textarea>
+              </div>
+            </div>
+
+            <div class="setting-row">
+              <div class="setting-copy">
+                <label>Start / end</label>
+                <p>End time is optional. If set, the VC is deleted automatically.</p>
+              </div>
+              <div class="setting-control setting-control-inline">
+                <input type="datetime-local" name="start_at" required>
+                <input type="datetime-local" name="end_at">
+              </div>
+            </div>
+
+            <div class="setting-row">
+              <div class="setting-copy">
+                <label>Repeat</label>
+                <p>Daily, weekly, monthly, or selected weekdays.</p>
+              </div>
+              <div class="setting-control">
+                <select name="repeat_mode">
+                  <option value="none">None</option>
+                  <option value="daily">Daily</option>
+                  <option value="weekly">Weekly</option>
+                  <option value="monthly">Monthly</option>
+                  <option value="weekdays">Selected weekdays</option>
+                </select>
+                <div class="weekday-grid">
+                  {% for value, label in [(0,"Mon"),(1,"Tue"),(2,"Wed"),(3,"Thu"),(4,"Fri"),(5,"Sat"),(6,"Sun")] %}
+                    <label><input type="checkbox" name="repeat_weekdays" value="{{ value }}"> {{ label }}</label>
+                  {% endfor %}
+                </div>
+              </div>
+            </div>
+
+            <div class="setting-row">
+              <div class="setting-copy">
+                <label>Mention</label>
+                <p>For user or role mentions, enter Discord IDs separated by commas.</p>
+              </div>
+              <div class="setting-control">
+                <select name="mention_type">
+                  <option value="none">None</option>
+                  <option value="user">Users</option>
+                  <option value="role">Roles</option>
+                  <option value="everyone">@everyone</option>
+                  <option value="here">@here</option>
+                </select>
+                <input type="text" name="mention_targets" placeholder="123,456">
+              </div>
+            </div>
+          </div>
+
+          <div class="form-actions">
+            <button type="submit" class="button button-primary">Create reservation</button>
+          </div>
+        </form>
+      </section>
+
+      <section class="content-section">
+        <div class="section-header">
+          <div>
+            <h2>Reservations</h2>
+            <p>Pending, active, and completed scheduled VCs.</p>
+          </div>
+        </div>
+
+        <div class="compact-table">
+          {% for item in schedules %}
+            <div class="compact-table-row">
+              <div>
+                <strong>{{ item.vc_name }}</strong>
+                <span>{{ item.status }} / {{ item.repeat_mode }}</span>
+              </div>
+              <div>
+                <strong>{{ format_datetime_input(item.start_at) }}</strong>
+                <span>{% if item.end_at %}End {{ format_datetime_input(item.end_at) }}{% else %}No end{% endif %}</span>
+              </div>
+              <form method="post" action="/dashboard/reservations/{{ item.id }}/delete">
+                <button type="submit" class="button button-ghost">Delete</button>
+              </form>
+            </div>
+          {% else %}
+            <div class="empty-state">
+              <strong>No reservations</strong>
+              <p>Create the first scheduled VC for this server.</p>
+            </div>
+          {% endfor %}
+        </div>
+      </section>
+    {% else %}
+      <section class="content-section">
+        <div class="empty-state">
+          <strong>No manageable servers</strong>
+          <p>You need server administrator permission to create VC reservations.</p>
+        </div>
+      </section>
+    {% endif %}
+  </main>
+</div>
+{% endblock %}

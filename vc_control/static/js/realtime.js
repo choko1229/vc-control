@@ -47,11 +47,21 @@
       .slice(0, 30)
       .map((item) => {
         const created = item.created_at ? new Date(item.created_at).toLocaleString() : "";
+        const isRead = Boolean(item.read_at);
         return `
-          <article class="notification-item" data-notification-id="${escapeHtml(item.id)}">
-            <strong>${escapeHtml(item.title || item.event_type || "通知")}</strong>
+          <article class="notification-item${isRead ? " is-read" : " is-unread"}" data-notification-id="${escapeHtml(item.id)}">
+            <div class="notification-item-title">
+              <strong>${escapeHtml(item.title || item.event_type || "通知")}</strong>
+              ${isRead ? "" : '<span class="notification-unread-dot" title="未読"></span>'}
+            </div>
             <p>${escapeHtml(item.message || "")}</p>
-            <small>${escapeHtml(created)}</small>
+            <div class="notification-item-footer">
+              <small>${escapeHtml(created)}</small>
+              <span class="notification-item-actions">
+                ${isRead ? "" : `<button type="button" class="inline-button" data-notification-read="${escapeHtml(item.id)}">既読</button>`}
+                <button type="button" class="inline-button danger" data-notification-delete="${escapeHtml(item.id)}">削除</button>
+              </span>
+            </div>
           </article>
         `;
       })
@@ -74,8 +84,49 @@
     if (notification.id && state.notifications.some((item) => item.id === notification.id)) return;
     state.notifications.unshift(notification);
     state.notifications = state.notifications.slice(0, 30);
-    state.unreadCount += 1;
+    if (!notification.read_at) state.unreadCount += 1;
     renderNotifications();
+  }
+
+  function syncNotificationState(payload) {
+    if (payload && typeof payload.unread_count !== "undefined") {
+      state.unreadCount = Number(payload.unread_count || 0);
+    }
+    renderNotifications();
+  }
+
+  async function markNotificationRead(notificationId) {
+    if (!notificationId) return;
+    const payload = await window.VCApp.api(`/api/notifications/${encodeURIComponent(notificationId)}/read`, {
+      method: "POST",
+    });
+    const item = state.notifications.find((notification) => String(notification.id) === String(notificationId));
+    if (item) item.read_at = new Date().toISOString();
+    syncNotificationState(payload);
+  }
+
+  async function markAllNotificationsRead() {
+    const payload = await window.VCApp.api("/api/notifications/read-all", { method: "POST" });
+    const now = new Date().toISOString();
+    state.notifications.forEach((notification) => {
+      if (!notification.read_at) notification.read_at = now;
+    });
+    syncNotificationState(payload);
+  }
+
+  async function deleteNotification(notificationId) {
+    if (!notificationId) return;
+    const payload = await window.VCApp.api(`/api/notifications/${encodeURIComponent(notificationId)}`, {
+      method: "DELETE",
+    });
+    state.notifications = state.notifications.filter((notification) => String(notification.id) !== String(notificationId));
+    syncNotificationState(payload);
+  }
+
+  async function deleteAllNotifications() {
+    const payload = await window.VCApp.api("/api/notifications", { method: "DELETE" });
+    state.notifications = [];
+    syncNotificationState(payload);
   }
 
   function updateDashboardSessions(payload) {
@@ -146,13 +197,35 @@
   }
 
   function bindNotifications() {
-    document.querySelector("[data-notification-toggle]")?.addEventListener("click", () => {
-      const drawer = document.querySelector("[data-notification-drawer]");
-      if (drawer) drawer.hidden = !drawer.hidden;
+    document.querySelectorAll("[data-notification-toggle]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const drawer = document.querySelector("[data-notification-drawer]");
+        if (drawer) drawer.hidden = !drawer.hidden;
+      });
     });
     document.querySelector("[data-notification-close]")?.addEventListener("click", () => {
       const drawer = document.querySelector("[data-notification-drawer]");
       if (drawer) drawer.hidden = true;
+    });
+    document.querySelector("[data-notification-read-all]")?.addEventListener("click", () => {
+      markAllNotificationsRead().catch((error) => window.VCToast?.warning(error.message));
+    });
+    document.querySelector("[data-notification-delete-all]")?.addEventListener("click", () => {
+      if (document.body.dataset.isOwner !== "1") return;
+      deleteAllNotifications().catch((error) => window.VCToast?.warning(error.message));
+    });
+    document.querySelector("[data-notification-list]")?.addEventListener("click", (event) => {
+      const target = event.target;
+      if (!(target instanceof HTMLElement)) return;
+      const readButton = target.closest("[data-notification-read]");
+      if (readButton instanceof HTMLElement) {
+        markNotificationRead(readButton.dataset.notificationRead).catch((error) => window.VCToast?.warning(error.message));
+        return;
+      }
+      const deleteButton = target.closest("[data-notification-delete]");
+      if (deleteButton instanceof HTMLElement) {
+        deleteNotification(deleteButton.dataset.notificationDelete).catch((error) => window.VCToast?.warning(error.message));
+      }
     });
   }
 

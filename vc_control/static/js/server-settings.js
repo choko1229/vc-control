@@ -4,6 +4,11 @@
     for (const element of Array.from(form.elements)) {
       if (!element.name) continue;
       if (element.type === "checkbox") {
+        if (form.querySelectorAll(`[name="${CSS.escape(element.name)}"]`).length > 1) {
+          if (!Array.isArray(payload[element.name])) payload[element.name] = [];
+          if (element.checked) payload[element.name].push(element.value);
+          continue;
+        }
         payload[element.name] = element.checked;
         continue;
       }

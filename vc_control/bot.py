@@ -116,6 +116,7 @@ class VoiceControlBot(commands.Bot):
 
         await self.session_manager.sync_guild_catalog()
         await self.session_manager.restore_sessions()
+        self.session_manager.start_scheduled_vc_worker()
 
         sync_guild_ids = _read_sync_guild_ids()
         try:

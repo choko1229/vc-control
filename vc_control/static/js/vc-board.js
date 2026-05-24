@@ -8,6 +8,15 @@
     reconnectTimerId: null,
     timerId: null,
     timelineEvents: [],
+    mobileMenuUserId: null,
+    touch: {
+      longPressTimerId: null,
+      pointerId: null,
+      userId: null,
+      startX: 0,
+      startY: 0,
+      moved: false,
+    },
   };
 
   function toId(value) {
@@ -400,6 +409,18 @@
     select.value = selected;
   }
 
+  function renderMobileTeamSelect(session) {
+    const select = document.querySelector("[data-mobile-team-select]");
+    if (!select) return;
+    const selected = state.mobileMenuUserId ? teamAssignmentFor(session, state.mobileMenuUserId) : "";
+    const options = [
+      '<option value="">Main VC / Unassigned</option>',
+      ...session.teamNames.map((teamName) => `<option value="${window.VCApp.escapeHtml(teamName)}">${window.VCApp.escapeHtml(teamName)}</option>`),
+    ];
+    select.innerHTML = options.join("");
+    select.value = selected || "";
+  }
+
   function timelineEventMarkup(event) {
     const created = event.created_at ? new Date(event.created_at).toLocaleString() : "";
     const actor = event.display_actor || event.user_name || "System";
@@ -483,6 +504,7 @@
     renderSelectedMember(session);
     renderMemberFormSelect(session);
     renderTimelineUserFilter(session);
+    renderMobileTeamSelect(session);
 
     const pending = pendingChangeCount(session);
     setNotice(
@@ -521,6 +543,18 @@
       });
     }
     state.dirty = false;
+  }
+
+  async function savePendingAssignments() {
+    if (!state.session) return;
+    const pending = pendingChangeCount(state.session);
+    if (!pending) {
+      window.VCToast?.info("保存するチーム移動はありません。");
+      return;
+    }
+    await applyPendingAssignments();
+    window.VCToast?.success("チーム移動を保存しました。");
+    await refreshSession();
   }
 
   async function updateServerState(userId, payload) {
@@ -589,6 +623,21 @@
     await refreshSession();
   }
 
+  async function submitAccessSettings(form) {
+    const { guildId, rootChannelId } = rootIds();
+    const formData = new FormData(form);
+    await window.VCApp.api(voiceApiUrl(guildId, rootChannelId, "/access"), {
+      method: "POST",
+      body: JSON.stringify({
+        access_mode: formData.get("access_mode"),
+        invited_user_ids: formData.getAll("invited_user_ids"),
+        access_role_ids: formData.getAll("access_role_ids"),
+      }),
+    });
+    window.VCToast?.success("VC access settings saved.");
+    await refreshSession();
+  }
+
   async function executeSplit() {
     const { guildId, rootChannelId } = rootIds();
     if (pendingChangeCount(state.session)) {
@@ -622,6 +671,47 @@
     });
     window.VCToast?.success("メンバーを呼び戻しました。");
     await refreshSession();
+  }
+
+  function closeMobileMemberMenu() {
+    state.mobileMenuUserId = null;
+    const menu = document.querySelector("[data-mobile-member-menu]");
+    if (menu) menu.hidden = true;
+  }
+
+  function openMobileMemberMenu(userId) {
+    if (!state.session) return;
+    const participant = state.session.activeParticipants.find((item) => sameId(item.user_id, userId));
+    if (!participant) return;
+    state.mobileMenuUserId = toId(userId);
+    state.selectedUserId = toId(userId);
+    render(state.session);
+    const menu = document.querySelector("[data-mobile-member-menu]");
+    const name = document.querySelector("[data-mobile-member-menu-name]");
+    if (name) name.textContent = participant.user.display_name;
+    if (menu) menu.hidden = false;
+  }
+
+  function clearLongPressTimer() {
+    window.clearTimeout(state.touch.longPressTimerId);
+    state.touch.longPressTimerId = null;
+  }
+
+  function handleSwipe(userId, deltaX, deltaY) {
+    if (!state.session || Math.abs(deltaX) < 54 || Math.abs(deltaX) < Math.abs(deltaY) * 1.4) return false;
+    const participant = state.session.activeParticipants.find((item) => sameId(item.user_id, userId));
+    if (!participant) return false;
+    if (deltaX > 0 && canMoveParticipant(participant)) {
+      state.selectedUserId = toId(userId);
+      render(state.session);
+      window.VCToast?.info("移動先のチームをタップしてください。");
+      return true;
+    }
+    if (deltaX < 0) {
+      openMobileMemberMenu(userId);
+      return true;
+    }
+    return false;
   }
 
   function handleRealtimeMessage(message) {
@@ -758,12 +848,96 @@
           window.VCToast?.error(error.message || "集合に失敗しました。");
         }
       }
+      if (event.target.closest("[data-mobile-action='save']")) {
+        try {
+          await savePendingAssignments();
+        } catch (error) {
+          window.VCToast?.error(error.message || "保存に失敗しました。");
+        }
+      }
+
+      const mobileMenuAction = event.target.closest("[data-mobile-menu-action]");
+      if (mobileMenuAction) {
+        const userId = state.mobileMenuUserId;
+        if (!userId) return;
+        try {
+          if (mobileMenuAction.dataset.mobileMenuAction === "move") {
+            const select = document.querySelector("[data-mobile-team-select]");
+            setPendingAssignment(userId, select?.value || "");
+            closeMobileMemberMenu();
+          } else if (mobileMenuAction.dataset.mobileMenuAction === "recall") {
+            await executeRecall(userId);
+            closeMobileMemberMenu();
+          } else if (mobileMenuAction.dataset.mobileMenuAction === "details") {
+            state.selectedUserId = userId;
+            closeMobileMemberMenu();
+            render(state.session);
+            document.querySelector("[data-selected-member]")?.scrollIntoView({ behavior: "smooth", block: "center" });
+          }
+        } catch (error) {
+          window.VCToast?.error(error.message || "操作に失敗しました。");
+        }
+      }
+
+      if (event.target.closest("[data-mobile-menu-close]") || event.target.matches("[data-mobile-member-menu]")) {
+        closeMobileMemberMenu();
+      }
+    });
+  }
+
+  function bindMobileGestures() {
+    const root = document.querySelector("[data-voice-board-root]");
+    if (!root) return;
+
+    root.addEventListener("pointerdown", (event) => {
+      if (event.pointerType === "mouse") return;
+      const target = event.target.closest("[data-user-id]");
+      if (!target || event.target.closest("[data-member-action]")) return;
+      state.touch.pointerId = event.pointerId;
+      state.touch.userId = toId(target.dataset.userId);
+      state.touch.startX = event.clientX;
+      state.touch.startY = event.clientY;
+      state.touch.moved = false;
+      clearLongPressTimer();
+      state.touch.longPressTimerId = window.setTimeout(() => {
+        if (!state.touch.moved && state.touch.userId) {
+          openMobileMemberMenu(state.touch.userId);
+        }
+      }, 520);
+    });
+
+    root.addEventListener("pointermove", (event) => {
+      if (state.touch.pointerId !== event.pointerId) return;
+      const deltaX = event.clientX - state.touch.startX;
+      const deltaY = event.clientY - state.touch.startY;
+      if (Math.abs(deltaX) > 12 || Math.abs(deltaY) > 12) {
+        state.touch.moved = true;
+        clearLongPressTimer();
+      }
+    });
+
+    root.addEventListener("pointerup", (event) => {
+      if (state.touch.pointerId !== event.pointerId) return;
+      clearLongPressTimer();
+      const userId = state.touch.userId;
+      const deltaX = event.clientX - state.touch.startX;
+      const deltaY = event.clientY - state.touch.startY;
+      state.touch.pointerId = null;
+      state.touch.userId = null;
+      if (userId) handleSwipe(userId, deltaX, deltaY);
+    });
+
+    root.addEventListener("pointercancel", () => {
+      clearLongPressTimer();
+      state.touch.pointerId = null;
+      state.touch.userId = null;
     });
   }
 
   function bindForms() {
     const voiceSettingsForm = document.querySelector("[data-voice-settings]");
     const memberStateForm = document.querySelector("[data-member-state]");
+    const accessSettingsForm = document.querySelector("[data-access-settings]");
 
     voiceSettingsForm?.addEventListener("submit", async (event) => {
       event.preventDefault();
@@ -780,6 +954,15 @@
         await submitMemberState(memberStateForm);
       } catch (error) {
         window.VCToast?.error(error.message || "メンバー状態の更新に失敗しました。");
+      }
+    });
+
+    accessSettingsForm?.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      try {
+        await submitAccessSettings(accessSettingsForm);
+      } catch (error) {
+        window.VCToast?.error(error.message || "VC access update failed.");
       }
     });
   }
@@ -800,6 +983,7 @@
 
     bindDragAndDrop();
     bindClicks();
+    bindMobileGestures();
     bindForms();
     window.addEventListener("vc:realtime", (event) => handleRealtimeMessage(event.detail));
 

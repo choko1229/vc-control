@@ -148,7 +148,6 @@ class AssignTeamSelect(discord.ui.Select):
             view=AssignUserView(self.manager, self.root_channel_id, session, selected),
         )
 
-
 class AssignTeamView(discord.ui.View):
     def __init__(self, manager: SessionManager, root_channel_id: int, session: LiveSession) -> None:
         super().__init__(timeout=180)
@@ -223,6 +222,57 @@ class RecallUserView(discord.ui.View):
         self.add_item(RecallUserSelect(manager, root_channel_id, session))
 
 
+class InviteUserSelect(discord.ui.UserSelect):
+    def __init__(self, manager: SessionManager, root_channel_id: int) -> None:
+        super().__init__(placeholder="Invite users", min_values=1, max_values=10)
+        self.manager = manager
+        self.root_channel_id = root_channel_id
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        member = cast(discord.Member, interaction.user)
+        user_ids = [str(user.id) for user in self.values]
+        try:
+            await self.manager.add_invited_users(self.root_channel_id, member.id, user_ids)
+        except (PermissionError, ValueError) as exc:
+            await interaction.response.send_message(str(exc), ephemeral=True)
+            return
+        await interaction.response.send_message("Invite users updated.", ephemeral=True)
+
+
+class InviteUserView(discord.ui.View):
+    def __init__(self, manager: SessionManager, root_channel_id: int) -> None:
+        super().__init__(timeout=180)
+        self.add_item(InviteUserSelect(manager, root_channel_id))
+
+
+class AccessRoleSelect(discord.ui.RoleSelect):
+    def __init__(self, manager: SessionManager, root_channel_id: int) -> None:
+        super().__init__(placeholder="Allowed roles", min_values=1, max_values=10)
+        self.manager = manager
+        self.root_channel_id = root_channel_id
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        member = cast(discord.Member, interaction.user)
+        role_ids = [str(role.id) for role in self.values]
+        try:
+            await self.manager.update_access_control(
+                self.root_channel_id,
+                member.id,
+                access_mode="role",
+                access_role_ids=role_ids,
+            )
+        except (PermissionError, ValueError) as exc:
+            await interaction.response.send_message(str(exc), ephemeral=True)
+            return
+        await interaction.response.send_message("Role access updated.", ephemeral=True)
+
+
+class AccessRoleView(discord.ui.View):
+    def __init__(self, manager: SessionManager, root_channel_id: int) -> None:
+        super().__init__(timeout=180)
+        self.add_item(AccessRoleSelect(manager, root_channel_id))
+
+
 class MainSessionControlView(discord.ui.View):
     def __init__(self, manager: SessionManager, root_channel_id: int, management_url: str | None = None) -> None:
         super().__init__(timeout=None)
@@ -252,6 +302,54 @@ class MainSessionControlView(discord.ui.View):
             ephemeral=True,
             view=RecallUserView(self.manager, self.root_channel_id, session),
         )
+
+    @discord.ui.button(label="Access: Public", style=discord.ButtonStyle.secondary)
+    async def panel_access_public(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        member = cast(discord.Member, interaction.user)
+        try:
+            await self.manager.update_access_control(self.root_channel_id, member.id, access_mode="public")
+        except (PermissionError, ValueError) as exc:
+            await interaction.response.send_message(str(exc), ephemeral=True)
+            return
+        await interaction.response.send_message("VC access set to public.", ephemeral=True)
+
+    @discord.ui.button(label="Access: Invite", style=discord.ButtonStyle.secondary)
+    async def panel_access_invite(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        member = cast(discord.Member, interaction.user)
+        try:
+            await self.manager.update_access_control(self.root_channel_id, member.id, access_mode="invite")
+        except (PermissionError, ValueError) as exc:
+            await interaction.response.send_message(str(exc), ephemeral=True)
+            return
+        await interaction.response.send_message("Select users to invite.", ephemeral=True, view=InviteUserView(self.manager, self.root_channel_id))
+
+    @discord.ui.button(label="Access: Roles", style=discord.ButtonStyle.secondary)
+    async def panel_access_roles(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await interaction.response.send_message("Select allowed roles.", ephemeral=True, view=AccessRoleView(self.manager, self.root_channel_id))
+
+    @discord.ui.button(label="Public", style=discord.ButtonStyle.secondary)
+    async def access_public(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        member = cast(discord.Member, interaction.user)
+        try:
+            await self.manager.update_access_control(self.root_channel_id, member.id, access_mode="public")
+        except (PermissionError, ValueError) as exc:
+            await interaction.response.send_message(str(exc), ephemeral=True)
+            return
+        await interaction.response.send_message("VC access set to public.", ephemeral=True)
+
+    @discord.ui.button(label="Invite", style=discord.ButtonStyle.secondary)
+    async def access_invite(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        member = cast(discord.Member, interaction.user)
+        try:
+            await self.manager.update_access_control(self.root_channel_id, member.id, access_mode="invite")
+        except (PermissionError, ValueError) as exc:
+            await interaction.response.send_message(str(exc), ephemeral=True)
+            return
+        await interaction.response.send_message("Select users to invite.", ephemeral=True, view=InviteUserView(self.manager, self.root_channel_id))
+
+    @discord.ui.button(label="Roles", style=discord.ButtonStyle.secondary)
+    async def access_roles(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await interaction.response.send_message("Select allowed roles.", ephemeral=True, view=AccessRoleView(self.manager, self.root_channel_id))
 
 
 class TeamPanelView(discord.ui.View):

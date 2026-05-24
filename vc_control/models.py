@@ -32,6 +32,16 @@ class GuildConfig:
     notification_channel_id: int | None = None
     first_empty_notice_sec: int = 30
     final_delete_sec: int = 90
+    solo_cleanup_mode: str = "notify_only"
+    solo_notice_after_sec: int = 3600
+    solo_delete_warning_after_sec: int = 1800
+    solo_repeat_notice_sec: int = 3600
+    ranking_post_enabled: bool = False
+    ranking_post_channel_id: int | None = None
+    ranking_post_frequencies: list[str] = field(default_factory=list)
+    ranking_post_time: str = "21:00"
+    ranking_post_targets: list[str] = field(default_factory=lambda: ["top_talkers", "top_hosts", "team_splits", "night_owls"])
+    ranking_post_last_keys: dict[str, str] = field(default_factory=dict)
     team_mode: str = "custom"
     team_names: list[str] = field(default_factory=lambda: DEFAULT_TEAM_NAMES.copy())
     enabled: bool = False
@@ -46,6 +56,16 @@ class GuildConfig:
             "notification_channel_id": self.notification_channel_id,
             "first_empty_notice_sec": self.first_empty_notice_sec,
             "final_delete_sec": self.final_delete_sec,
+            "solo_cleanup_mode": self.solo_cleanup_mode,
+            "solo_notice_after_sec": self.solo_notice_after_sec,
+            "solo_delete_warning_after_sec": self.solo_delete_warning_after_sec,
+            "solo_repeat_notice_sec": self.solo_repeat_notice_sec,
+            "ranking_post_enabled": int(self.ranking_post_enabled),
+            "ranking_post_channel_id": self.ranking_post_channel_id,
+            "ranking_post_frequencies_json": self.ranking_post_frequencies,
+            "ranking_post_time": self.ranking_post_time,
+            "ranking_post_targets_json": self.ranking_post_targets,
+            "ranking_post_last_keys_json": self.ranking_post_last_keys,
             "team_mode": self.team_mode,
             "team_names_json": self.team_names,
             "enabled": int(self.enabled),
@@ -62,10 +82,102 @@ class GuildConfig:
             notification_channel_id=row["notification_channel_id"],
             first_empty_notice_sec=int(row["first_empty_notice_sec"]),
             final_delete_sec=int(row["final_delete_sec"]),
+            solo_cleanup_mode=str(row.get("solo_cleanup_mode", "notify_only")),
+            solo_notice_after_sec=int(row.get("solo_notice_after_sec", 3600)),
+            solo_delete_warning_after_sec=int(row.get("solo_delete_warning_after_sec", 1800)),
+            solo_repeat_notice_sec=int(row.get("solo_repeat_notice_sec", 3600)),
+            ranking_post_enabled=bool(row.get("ranking_post_enabled", 0)),
+            ranking_post_channel_id=int(row["ranking_post_channel_id"]) if row.get("ranking_post_channel_id") is not None else None,
+            ranking_post_frequencies=[str(item) for item in json_loads(row.get("ranking_post_frequencies_json"), [])],
+            ranking_post_time=str(row.get("ranking_post_time", "21:00")),
+            ranking_post_targets=[str(item) for item in json_loads(row.get("ranking_post_targets_json"), ["top_talkers", "top_hosts", "team_splits", "night_owls"])],
+            ranking_post_last_keys=dict(json_loads(row.get("ranking_post_last_keys_json"), {})),
             team_mode=str(row["team_mode"]),
             team_names=list(json_loads(row["team_names_json"], DEFAULT_TEAM_NAMES)),
             enabled=bool(row["enabled"]),
             updated_at=from_iso(row["updated_at"]),
+        )
+
+
+@dataclass(slots=True)
+class ScheduledVC:
+    id: int | None
+    guild_id: int
+    guild_name: str
+    creator_user_id: int
+    creator_user_name: str
+    vc_name: str
+    category_id: int | None
+    user_limit: int
+    bitrate: int | None
+    mention_type: str
+    mention_targets: list[str] = field(default_factory=list)
+    description: str = ""
+    start_at: datetime | None = None
+    end_at: datetime | None = None
+    repeat_mode: str = "none"
+    repeat_weekdays: list[int] = field(default_factory=list)
+    status: str = "pending"
+    created_channel_id: int | None = None
+    pre_notice_15_sent: bool = False
+    pre_notice_5_sent: bool = False
+    pre_notice_3_sent: bool = False
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+    def to_record(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "guild_id": self.guild_id,
+            "guild_name": self.guild_name,
+            "creator_user_id": self.creator_user_id,
+            "creator_user_name": self.creator_user_name,
+            "vc_name": self.vc_name,
+            "category_id": self.category_id,
+            "user_limit": self.user_limit,
+            "bitrate": self.bitrate,
+            "mention_type": self.mention_type,
+            "mention_targets_json": self.mention_targets,
+            "description": self.description,
+            "start_at": to_iso(self.start_at),
+            "end_at": to_iso(self.end_at),
+            "repeat_mode": self.repeat_mode,
+            "repeat_weekdays_json": self.repeat_weekdays,
+            "status": self.status,
+            "created_channel_id": self.created_channel_id,
+            "pre_notice_15_sent": int(self.pre_notice_15_sent),
+            "pre_notice_5_sent": int(self.pre_notice_5_sent),
+            "pre_notice_3_sent": int(self.pre_notice_3_sent),
+            "created_at": to_iso(self.created_at),
+            "updated_at": to_iso(self.updated_at),
+        }
+
+    @classmethod
+    def from_record(cls, row: dict[str, Any]) -> "ScheduledVC":
+        return cls(
+            id=int(row["id"]) if row.get("id") is not None else None,
+            guild_id=int(row["guild_id"]),
+            guild_name=str(row["guild_name"]),
+            creator_user_id=int(row["creator_user_id"]),
+            creator_user_name=str(row["creator_user_name"]),
+            vc_name=str(row["vc_name"]),
+            category_id=int(row["category_id"]) if row.get("category_id") is not None else None,
+            user_limit=int(row.get("user_limit") or 0),
+            bitrate=int(row["bitrate"]) if row.get("bitrate") is not None else None,
+            mention_type=str(row.get("mention_type") or "none"),
+            mention_targets=[str(item) for item in json_loads(row.get("mention_targets_json"), [])],
+            description=str(row.get("description") or ""),
+            start_at=from_iso(row.get("start_at")),
+            end_at=from_iso(row.get("end_at")),
+            repeat_mode=str(row.get("repeat_mode") or "none"),
+            repeat_weekdays=[int(item) for item in json_loads(row.get("repeat_weekdays_json"), [])],
+            status=str(row.get("status") or "pending"),
+            created_channel_id=int(row["created_channel_id"]) if row.get("created_channel_id") is not None else None,
+            pre_notice_15_sent=bool(row.get("pre_notice_15_sent")),
+            pre_notice_5_sent=bool(row.get("pre_notice_5_sent")),
+            pre_notice_3_sent=bool(row.get("pre_notice_3_sent")),
+            created_at=from_iso(row.get("created_at")),
+            updated_at=from_iso(row.get("updated_at")),
         )
 
 
@@ -225,6 +337,9 @@ class SessionSnapshot:
     notice_message_id: int | None
     member_order: list[int]
     members: list[SnapshotMember]
+    access_mode: str = "public"
+    invited_user_ids: list[str] = field(default_factory=list)
+    access_role_ids: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -243,6 +358,9 @@ class SessionSnapshot:
             "team_mode": self.team_mode,
             "team_assignments": self.team_assignments,
             "team_channels": self.team_channels,
+            "access_mode": self.access_mode,
+            "invited_user_ids": self.invited_user_ids,
+            "access_role_ids": self.access_role_ids,
             "notice_channel_id": self.notice_channel_id,
             "notice_message_id": self.notice_message_id,
             "member_order": self.member_order,
@@ -271,4 +389,7 @@ class SessionSnapshot:
             notice_message_id=int(payload["notice_message_id"]) if payload.get("notice_message_id") is not None else None,
             member_order=[int(item) for item in payload.get("member_order", [])],
             members=[SnapshotMember.from_dict(item) for item in payload.get("members", [])],
+            access_mode=str(payload.get("access_mode", "public")),
+            invited_user_ids=[str(item) for item in payload.get("invited_user_ids", [])],
+            access_role_ids=[str(item) for item in payload.get("access_role_ids", [])],
         )

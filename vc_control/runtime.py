@@ -7,11 +7,12 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import discord
 from fastapi import WebSocket
 
-from vc_control.models import DEFAULT_TEAM_NAMES, CompletedMember, CompletedSession, GuildConfig, SessionSnapshot, SnapshotMember
+from vc_control.models import DEFAULT_TEAM_NAMES, CompletedMember, CompletedSession, GuildConfig, ScheduledVC, SessionSnapshot, SnapshotMember
 from vc_control.repositories import ConfigRepository, StatsRepository
 from vc_control.utils import format_duration, make_session_key, normalize_ids, utcnow
 
@@ -30,6 +31,16 @@ TIMELINE_EVENT_LABELS = {
     "team_changed": "チーム変更",
     "bot_restart_restored": "BOT再起動復元",
     "scheduled_vc_created": "予約VC作成",
+    "web_vc_created": "Web VC created",
+    "access_changed": "Access changed",
+}
+
+LOCAL_TZ = ZoneInfo("Asia/Tokyo")
+RANKING_TARGET_LABELS = {
+    "top_talkers": "今日最も通話した人",
+    "top_hosts": "最も人を集めたVC主",
+    "team_splits": "チーム分け回数",
+    "night_owls": "深夜勢ランキング",
 }
 
 
@@ -126,6 +137,9 @@ class LiveSession:
     panel_creator_name: str | None = None
     team_assignments: dict[int, str] = field(default_factory=dict)
     team_channels: dict[str, int] = field(default_factory=dict)
+    access_mode: str = "public"
+    invited_user_ids: set[str] = field(default_factory=set)
+    access_role_ids: set[str] = field(default_factory=set)
     notice_channel_id: int | None = None
     notice_message_id: int | None = None
     member_order: list[int] = field(default_factory=list)
@@ -156,6 +170,9 @@ class LiveSession:
             team_mode=self.team_mode,
             team_assignments={str(key): value for key, value in self.team_assignments.items()},
             team_channels=self.team_channels.copy(),
+            access_mode=self.access_mode,
+            invited_user_ids=sorted(self.invited_user_ids),
+            access_role_ids=sorted(self.access_role_ids),
             notice_channel_id=self.notice_channel_id,
             notice_message_id=self.notice_message_id,
             member_order=self.member_order.copy(),
@@ -180,6 +197,9 @@ class LiveSession:
             "team_mode": self.team_mode,
             "team_assignments": {str(key): value for key, value in self.team_assignments.items()},
             "team_channels": {team_name: str(channel_id) for team_name, channel_id in self.team_channels.items()},
+            "access_mode": self.access_mode,
+            "invited_user_ids": sorted(self.invited_user_ids),
+            "access_role_ids": sorted(self.access_role_ids),
             "session_key": {"guild_id": str(self.guild_id), "vc_id": str(self.root_channel_id)},
             "notice_channel_id": str(self.notice_channel_id) if self.notice_channel_id is not None else None,
             "notice_message_id": str(self.notice_message_id) if self.notice_message_id is not None else None,
@@ -193,6 +213,13 @@ class LiveSession:
 class DeletionHandle:
     task: asyncio.Task[None]
     notice_sent: bool = False
+
+
+@dataclass(slots=True)
+class SoloCleanupHandle:
+    task: asyncio.Task[None]
+    notice_sent: bool = False
+    warning_sent: bool = False
 
 
 @dataclass(slots=True)
@@ -259,6 +286,9 @@ class SessionManager:
         self.sessions_by_key: dict[tuple[int, int], LiveSession] = {}
         self.channel_to_root: dict[int, int] = {}
         self.deletion_tasks: dict[int, DeletionHandle] = {}
+        self.solo_cleanup_tasks: dict[int, SoloCleanupHandle] = {}
+        self.auto_personal_root_channels: set[int] = set()
+        self.scheduled_vc_task: asyncio.Task[None] | None = None
         self.system_move_markers: list[SystemMoveMarker] = []
 
     def bind_bot(self, bot: discord.Client) -> None:
@@ -267,6 +297,9 @@ class SessionManager:
     async def refresh_guild_configs(self) -> None:
         configs = await self.config_repo.list_guild_configs()
         self.guild_configs = {config.guild_id: config for config in configs}
+        for session in list(self.sessions.values()):
+            self._cancel_solo_cleanup_by_channel_id(session.root_channel_id)
+            await self._refresh_solo_cleanup_for_session(session)
 
     async def sync_guild_catalog(self) -> None:
         if self.bot is None:
@@ -274,6 +307,131 @@ class SessionManager:
         guilds = [(guild.id, guild.name) for guild in self.bot.guilds]
         await self.config_repo.sync_guild_catalog(guilds)
         await self.refresh_guild_configs()
+
+    def start_scheduled_vc_worker(self) -> None:
+        if self.scheduled_vc_task is not None and not self.scheduled_vc_task.done():
+            return
+        self.scheduled_vc_task = asyncio.create_task(self._scheduled_vc_worker())
+
+    async def _scheduled_vc_worker(self) -> None:
+        while True:
+            try:
+                await self._process_scheduled_vcs()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                self.logger.exception("scheduled VC worker failed")
+            await asyncio.sleep(30)
+
+    async def _process_scheduled_vcs(self) -> None:
+        if self.bot is None or not self.guild_configs:
+            return
+        now = utcnow()
+        for scheduled in await self.config_repo.list_due_scheduled_vc_starts(now):
+            await self._start_scheduled_vc(scheduled)
+        for scheduled in await self.config_repo.list_active_scheduled_vcs():
+            await self._process_active_scheduled_vc(scheduled, now)
+        await self._process_ranking_posts(now)
+
+    def _ranking_frequency_key(self, frequency: str, now: datetime) -> str:
+        local_now = now.astimezone(LOCAL_TZ)
+        if frequency == "weekly":
+            year, week, _ = local_now.isocalendar()
+            return f"weekly:{year}-W{week:02d}"
+        if frequency == "monthly":
+            return f"monthly:{local_now.year}-{local_now.month:02d}"
+        return f"daily:{local_now.date().isoformat()}"
+
+    def _ranking_period_for_frequency(self, frequency: str) -> str:
+        if frequency == "weekly":
+            return "week"
+        if frequency == "monthly":
+            return "month"
+        return "day"
+
+    def _ranking_post_time_due(self, config: GuildConfig, now: datetime) -> bool:
+        try:
+            hour_text, minute_text = (config.ranking_post_time or "21:00").split(":", 1)
+            hour = max(0, min(23, int(hour_text)))
+            minute = max(0, min(59, int(minute_text)))
+        except ValueError:
+            hour, minute = 21, 0
+        local_now = now.astimezone(LOCAL_TZ)
+        return (local_now.hour, local_now.minute) >= (hour, minute)
+
+    async def _process_ranking_posts(self, now: datetime) -> None:
+        for config in list(self.guild_configs.values()):
+            if not config.ranking_post_enabled or not config.ranking_post_channel_id:
+                continue
+            if not self._ranking_post_time_due(config, now):
+                continue
+            frequencies = [item for item in config.ranking_post_frequencies if item in {"daily", "weekly", "monthly"}]
+            for frequency in frequencies:
+                post_key = self._ranking_frequency_key(frequency, now)
+                if config.ranking_post_last_keys.get(frequency) == post_key:
+                    continue
+                sent = await self.post_activity_rankings(config.guild_id, frequency=frequency)
+                if sent:
+                    config.ranking_post_last_keys[frequency] = post_key
+                    await self.config_repo.update_ranking_post_last_keys(config.guild_id, config.ranking_post_last_keys)
+
+    async def post_activity_rankings(self, guild_id: int, *, frequency: str = "manual") -> bool:
+        config = self.guild_configs.get(guild_id) or await self.get_guild_config(guild_id)
+        if config is None or config.ranking_post_channel_id is None:
+            return False
+        channel = await self._resolve_notice_channel(guild_id, config.ranking_post_channel_id)
+        if channel is None:
+            return False
+        period = self._ranking_period_for_frequency(frequency)
+        targets = [target for target in config.ranking_post_targets if target in RANKING_TARGET_LABELS]
+        if not targets:
+            targets = list(RANKING_TARGET_LABELS)
+        bundle = await self.stats_repo.get_activity_ranking_bundle(guild_id, period=period, limit=5)
+        embed = self._build_activity_ranking_embed(config, bundle, targets, frequency)
+        try:
+            await channel.send(embed=embed)
+        except discord.Forbidden:
+            self.logger.exception("activity ranking post permission denied: guild_id=%s", guild_id)
+            return False
+        except discord.HTTPException:
+            self.logger.exception("activity ranking post failed: guild_id=%s", guild_id)
+            return False
+        return True
+
+    def _build_activity_ranking_embed(
+        self,
+        config: GuildConfig,
+        bundle: dict[str, list[dict[str, Any]]],
+        targets: list[str],
+        frequency: str,
+    ) -> discord.Embed:
+        title_suffix = "Manual" if frequency == "manual" else frequency.capitalize()
+        embed = discord.Embed(
+            title=f"Activity Rankings - {title_suffix}",
+            description=f"{config.guild_name} activity summary.",
+            color=discord.Color.blurple(),
+            timestamp=utcnow(),
+        )
+        for target in targets:
+            rows = bundle.get(target, [])
+            lines: list[str] = []
+            for row in rows[:5]:
+                rank = int(row.get("rank") or len(lines) + 1)
+                user = row.get("user_name") or row.get("user_id") or "Unknown"
+                if target == "top_hosts":
+                    value = f"{int(row.get('gathered_count') or 0)} users / {int(row.get('session_count') or 0)} VCs"
+                elif target == "team_splits":
+                    value = f"{int(row.get('split_count') or 0)} splits"
+                else:
+                    value = format_duration(int(row.get("talk_seconds") or 0))
+                lines.append(f"{rank}. {user} - {value}")
+            embed.add_field(
+                name=RANKING_TARGET_LABELS[target],
+                value="\n".join(lines) if lines else "No data",
+                inline=False,
+            )
+        embed.set_footer(text="Night owls: 00:00-05:00")
+        return embed
 
     async def restore_sessions(self) -> None:
         if self.bot is None:
@@ -305,6 +463,9 @@ class SessionManager:
                 panel_creator_name=snapshot.panel_creator_name,
                 team_assignments={int(key): value for key, value in snapshot.team_assignments.items()},
                 team_channels=snapshot.team_channels.copy(),
+                access_mode=snapshot.access_mode,
+                invited_user_ids=set(snapshot.invited_user_ids),
+                access_role_ids=set(snapshot.access_role_ids),
                 notice_channel_id=snapshot.notice_channel_id,
                 notice_message_id=snapshot.notice_message_id,
                 member_order=snapshot.member_order.copy(),
@@ -337,6 +498,8 @@ class SessionManager:
                 session.participants[participant.user_id] = participant
             self._hydrate_session_live_members(session, guild, root_channel)
             self._register_session(session)
+            self.auto_personal_root_channels.add(session.root_channel_id)
+            await self._apply_access_overwrites(session)
             management_url = await self.build_management_url(session.guild_id, session.root_channel_id)
             await self._send_restart_restored_management_panel(session, management_url)
             await self._persist_and_broadcast(session)
@@ -568,6 +731,8 @@ class SessionManager:
         session = await self.create_session_from_current_channel_state(guild, channel, non_bot_members)
 
         self._register_session(session)
+        if self._channel_name_matches_personal_session(session, channel):
+            self.auto_personal_root_channels.add(session.root_channel_id)
         management_url = await self.build_management_url(session.guild_id, session.root_channel_id)
         await self._send_restart_restored_management_panel(session, management_url)
         await self._persist_and_broadcast(session)
@@ -618,6 +783,7 @@ class SessionManager:
             if config.base_voice_channel_id and channel.id == config.base_voice_channel_id:
                 continue
             if channel.name == target_name:
+                self.auto_personal_root_channels.add(channel.id)
                 return channel
         try:
             created = await guild.create_voice_channel(
@@ -626,6 +792,7 @@ class SessionManager:
                 reason="個人VCの自動作成",
             )
             self.logger.info("個人VCを作成しました: guild=%s channel=%s", guild.name, created.name)
+            self.auto_personal_root_channels.add(created.id)
             return created
         except discord.Forbidden:
             self.logger.exception("個人VCの作成権限がありません")
@@ -897,6 +1064,473 @@ class SessionManager:
                 session.notice_message_id,
             )
 
+    def _scheduled_mention_text(self, scheduled: ScheduledVC) -> str:
+        if scheduled.mention_type == "everyone":
+            return "@everyone"
+        if scheduled.mention_type == "here":
+            return "@here"
+        if scheduled.mention_type == "role":
+            return " ".join(f"<@&{target}>" for target in scheduled.mention_targets)
+        if scheduled.mention_type == "user":
+            return " ".join(f"<@{target}>" for target in scheduled.mention_targets)
+        return ""
+
+    async def _publish_scheduled_vc_notification(
+        self,
+        event_type: str,
+        title: str,
+        message: str,
+        scheduled: ScheduledVC,
+        *,
+        channel_id: int | None = None,
+    ) -> None:
+        payload = {
+            "scheduled_vc_id": str(scheduled.id),
+            "guild_id": str(scheduled.guild_id),
+            "root_channel_id": str(channel_id) if channel_id is not None else None,
+            "vc_name": scheduled.vc_name,
+        }
+        try:
+            notification = await self.config_repo.create_notification(
+                event_type=event_type,
+                title=title,
+                message=message,
+                guild_id=scheduled.guild_id,
+                root_channel_id=channel_id,
+                recipient_user_id=None,
+                payload=payload,
+            )
+        except Exception:
+            self.logger.exception("scheduled VC notification save failed: scheduled_id=%s", scheduled.id)
+            notification = {
+                "id": None,
+                "created_at": utcnow().isoformat(),
+                "event_type": event_type,
+                "title": title,
+                "message": message,
+                "guild_id": str(scheduled.guild_id),
+                "root_channel_id": str(channel_id) if channel_id is not None else None,
+                "recipient_user_id": None,
+                "payload": payload,
+                "read_at": None,
+            }
+        await self.websocket_hub.broadcast(
+            f"guild:{scheduled.guild_id}",
+            "important_notification",
+            {"type": event_type, "notification": notification, "payload": payload},
+        )
+        await self.websocket_hub.broadcast(
+            "global",
+            "important_notification",
+            {"type": event_type, "notification": notification, "payload": payload},
+        )
+
+    async def _send_scheduled_vc_dms(self, scheduled: ScheduledVC, embed: discord.Embed) -> None:
+        if self.bot is None:
+            return
+        guild = self._resolve_guild(scheduled.guild_id)
+        target_ids: set[int] = {scheduled.creator_user_id}
+        if guild is not None:
+            if scheduled.mention_type == "user":
+                target_ids.update(int(target) for target in scheduled.mention_targets if str(target).isdigit())
+            elif scheduled.mention_type == "role":
+                role_ids = {int(target) for target in scheduled.mention_targets if str(target).isdigit()}
+                for member in guild.members:
+                    if member.bot:
+                        continue
+                    if any(role.id in role_ids for role in member.roles):
+                        target_ids.add(member.id)
+            elif scheduled.mention_type in {"everyone", "here"}:
+                target_ids.update(member.id for member in guild.members if not member.bot)
+        for user_id in target_ids:
+            user: discord.User | discord.Member | None = self.bot.get_user(user_id)
+            if user is None and guild is not None:
+                user = guild.get_member(user_id)
+            if user is None:
+                try:
+                    user = await self.bot.fetch_user(user_id)
+                except (discord.Forbidden, discord.HTTPException, discord.NotFound):
+                    continue
+            try:
+                await user.send(embed=embed)
+            except (discord.Forbidden, discord.HTTPException):
+                self.logger.info("scheduled VC DM failed: scheduled_id=%s user=%s", scheduled.id, user_id)
+
+    async def _send_scheduled_vc_message(
+        self,
+        channel: discord.abc.Messageable | None,
+        scheduled: ScheduledVC,
+        embed: discord.Embed,
+    ) -> None:
+        if channel is None:
+            return
+        mention_text = self._scheduled_mention_text(scheduled)
+        try:
+            await channel.send(
+                content=mention_text or None,
+                embed=embed,
+                allowed_mentions=discord.AllowedMentions(everyone=True, users=True, roles=True),
+            )
+        except discord.Forbidden:
+            self.logger.exception("scheduled VC notification permission denied: scheduled_id=%s", scheduled.id)
+        except discord.HTTPException:
+            self.logger.exception("scheduled VC notification send failed: scheduled_id=%s", scheduled.id)
+
+    async def _record_scheduled_vc_timeline(self, scheduled: ScheduledVC, channel: discord.VoiceChannel, event_type: str, message: str) -> None:
+        try:
+            event = await self.stats_repo.record_timeline_event(
+                session_id=f"scheduled:{scheduled.id}",
+                guild_id=str(scheduled.guild_id),
+                guild_name=scheduled.guild_name,
+                root_channel_id=str(channel.id),
+                root_channel_name=channel.name,
+                event_type=event_type,
+                event_label=TIMELINE_EVENT_LABELS.get(event_type, event_type),
+                user_id=str(scheduled.creator_user_id),
+                user_name=scheduled.creator_user_name,
+                message=message,
+                payload={"scheduled_vc_id": str(scheduled.id)},
+                retention_days=await self._timeline_retention_days(),
+            )
+            await self.websocket_hub.broadcast(f"guild:{scheduled.guild_id}", "timeline_event", event)
+        except Exception:
+            self.logger.exception("scheduled VC timeline save failed: scheduled_id=%s", scheduled.id)
+
+    async def _record_web_vc_creation(
+        self,
+        *,
+        guild: discord.Guild,
+        channel: discord.VoiceChannel,
+        actor_id: int,
+        actor_name: str,
+        vc_type: str,
+    ) -> None:
+        try:
+            event = await self.stats_repo.record_timeline_event(
+                session_id=f"web:{channel.id}",
+                guild_id=str(guild.id),
+                guild_name=guild.name,
+                root_channel_id=str(channel.id),
+                root_channel_name=channel.name,
+                event_type="web_vc_created",
+                event_label=TIMELINE_EVENT_LABELS.get("web_vc_created", "Web VC created"),
+                user_id=str(actor_id),
+                user_name=actor_name,
+                message=f"{channel.name} was created from the web dashboard.",
+                payload={"vc_type": vc_type},
+                retention_days=await self._timeline_retention_days(),
+            )
+            await self.websocket_hub.broadcast(f"guild:{guild.id}", "timeline_event", event)
+        except Exception:
+            self.logger.exception("web VC creation timeline save failed: guild_id=%s channel_id=%s", guild.id, channel.id)
+
+    async def _publish_web_vc_creation_notification(
+        self,
+        *,
+        guild: discord.Guild,
+        channel: discord.VoiceChannel,
+        actor_id: int,
+        actor_name: str,
+        vc_type: str,
+    ) -> None:
+        payload = {
+            "guild_id": str(guild.id),
+            "root_channel_id": str(channel.id),
+            "vc_name": channel.name,
+            "vc_type": vc_type,
+            "actor_user_id": str(actor_id),
+        }
+        try:
+            notification = await self.config_repo.create_notification(
+                event_type="web_vc_created",
+                title="Web VC created",
+                message=f"{channel.name} was created by {actor_name}.",
+                guild_id=guild.id,
+                root_channel_id=channel.id,
+                recipient_user_id=None,
+                payload=payload,
+            )
+        except Exception:
+            self.logger.exception("web VC creation notification save failed: guild_id=%s channel_id=%s", guild.id, channel.id)
+            notification = {
+                "id": None,
+                "created_at": utcnow().isoformat(),
+                "event_type": "web_vc_created",
+                "title": "Web VC created",
+                "message": f"{channel.name} was created by {actor_name}.",
+                "guild_id": str(guild.id),
+                "root_channel_id": str(channel.id),
+                "recipient_user_id": None,
+                "payload": payload,
+                "read_at": None,
+            }
+        envelope = {"type": "web_vc_created", "notification": notification, "payload": payload}
+        for scope in {f"guild:{guild.id}", f"session:{channel.id}", "global"}:
+            await self.websocket_hub.broadcast(scope, "important_notification", envelope)
+
+    async def create_web_voice_channel(
+        self,
+        *,
+        guild_id: int,
+        actor_id: int,
+        actor_name: str,
+        vc_type: str,
+        owner_user_id: int | None = None,
+        vc_name: str | None = None,
+        user_limit: int = 0,
+        bitrate: int | None = None,
+        end_at: datetime | None = None,
+        description: str = "",
+    ) -> discord.VoiceChannel:
+        if not await self.is_guild_admin(guild_id, actor_id):
+            raise PermissionError("Server administrator permission is required.")
+        guild = self._resolve_guild(guild_id)
+        config = await self.get_guild_config(guild_id)
+        if guild is None or config is None or not config.enabled or config.managed_category_id is None:
+            raise ValueError("Managed category is not configured.")
+        category = guild.get_channel(config.managed_category_id)
+        if not isinstance(category, discord.CategoryChannel):
+            raise ValueError("Managed category is not available.")
+        normalized_type = "event" if vc_type == "event" else "personal"
+        owner_name = ""
+        if normalized_type == "personal":
+            if owner_user_id is None:
+                raise ValueError("Owner user is required.")
+            owner = guild.get_member(owner_user_id)
+            if owner is None and self.bot is not None:
+                try:
+                    owner = await guild.fetch_member(owner_user_id)
+                except (discord.Forbidden, discord.HTTPException, discord.NotFound):
+                    owner = None
+            owner_name = owner.display_name if owner is not None else str(owner_user_id)
+            target_name = (vc_name or "").strip() or f"{owner_name}縺ｮVC"
+        else:
+            if end_at is None:
+                raise ValueError("End time is required for temporary event VC.")
+            target_name = (vc_name or "").strip() or "Temporary Event VC"
+        create_kwargs: dict[str, Any] = {
+            "category": category,
+            "user_limit": max(0, min(99, int(user_limit))),
+            "reason": f"web dashboard {normalized_type} VC creation",
+        }
+        if bitrate is not None:
+            create_kwargs["bitrate"] = int(bitrate)
+        try:
+            channel = await guild.create_voice_channel(target_name, **create_kwargs)
+        except discord.Forbidden as exc:
+            raise PermissionError("Bot cannot create voice channels.") from exc
+        except discord.HTTPException as exc:
+            raise RuntimeError("Failed to create voice channel.") from exc
+
+        if normalized_type == "personal":
+            self.auto_personal_root_channels.add(channel.id)
+        else:
+            scheduled = await self.config_repo.create_scheduled_vc(
+                ScheduledVC(
+                    id=None,
+                    guild_id=guild.id,
+                    guild_name=guild.name,
+                    creator_user_id=actor_id,
+                    creator_user_name=actor_name,
+                    vc_name=channel.name,
+                    category_id=category.id,
+                    user_limit=max(0, min(99, int(user_limit))),
+                    bitrate=bitrate,
+                    mention_type="none",
+                    mention_targets=[],
+                    description=description.strip(),
+                    start_at=utcnow(),
+                    end_at=end_at,
+                    repeat_mode="none",
+                    status="active",
+                    created_channel_id=channel.id,
+                )
+            )
+            if scheduled.id is not None:
+                await self.config_repo.update_scheduled_vc_start_result(scheduled.id, channel_id=channel.id, status="active")
+
+        embed = discord.Embed(
+            title="Web VC created",
+            description=f"**{channel.name}** was created from the web dashboard.",
+            color=discord.Color.green(),
+        )
+        if normalized_type == "personal":
+            embed.add_field(name="Owner", value=f"<@{owner_user_id}>", inline=True)
+        if end_at is not None:
+            embed.add_field(name="End", value=discord.utils.format_dt(end_at, style="F"), inline=True)
+        if description.strip():
+            embed.add_field(name="Description", value=description.strip()[:1024], inline=False)
+        await self._send_embed(channel, embed)
+        notice_channel = await self._resolve_notice_channel(guild.id)
+        if notice_channel is not None:
+            await self._send_embed(notice_channel, embed)
+        await self._record_web_vc_creation(
+            guild=guild,
+            channel=channel,
+            actor_id=actor_id,
+            actor_name=actor_name,
+            vc_type=normalized_type,
+        )
+        await self._publish_web_vc_creation_notification(
+            guild=guild,
+            channel=channel,
+            actor_id=actor_id,
+            actor_name=actor_name,
+            vc_type=normalized_type,
+        )
+        await self._broadcast_global_state()
+        return channel
+
+    def _next_scheduled_occurrence(self, scheduled: ScheduledVC) -> tuple[datetime, datetime | None] | None:
+        if scheduled.start_at is None or scheduled.repeat_mode == "none":
+            return None
+        duration = (scheduled.end_at - scheduled.start_at) if scheduled.end_at is not None else None
+        cursor = scheduled.start_at
+        if scheduled.repeat_mode == "daily":
+            next_start = cursor + timedelta(days=1)
+        elif scheduled.repeat_mode == "weekly":
+            next_start = cursor + timedelta(days=7)
+        elif scheduled.repeat_mode == "monthly":
+            month = cursor.month + 1
+            year = cursor.year + (1 if month > 12 else 0)
+            month = 1 if month > 12 else month
+            day = min(cursor.day, 28)
+            next_start = cursor.replace(year=year, month=month, day=day)
+        elif scheduled.repeat_mode == "weekdays":
+            weekdays = sorted({int(day) for day in scheduled.repeat_weekdays if 0 <= int(day) <= 6})
+            if not weekdays:
+                return None
+            next_start = cursor + timedelta(days=1)
+            for _ in range(14):
+                if next_start.weekday() in weekdays:
+                    break
+                next_start += timedelta(days=1)
+        else:
+            return None
+        return next_start, (next_start + duration) if duration is not None else None
+
+    async def _create_next_scheduled_occurrence(self, scheduled: ScheduledVC) -> None:
+        next_range = self._next_scheduled_occurrence(scheduled)
+        if next_range is None:
+            return
+        next_start, next_end = next_range
+        await self.config_repo.create_scheduled_vc(
+            ScheduledVC(
+                id=None,
+                guild_id=scheduled.guild_id,
+                guild_name=scheduled.guild_name,
+                creator_user_id=scheduled.creator_user_id,
+                creator_user_name=scheduled.creator_user_name,
+                vc_name=scheduled.vc_name,
+                category_id=scheduled.category_id,
+                user_limit=scheduled.user_limit,
+                bitrate=scheduled.bitrate,
+                mention_type=scheduled.mention_type,
+                mention_targets=scheduled.mention_targets.copy(),
+                description=scheduled.description,
+                start_at=next_start,
+                end_at=next_end,
+                repeat_mode=scheduled.repeat_mode,
+                repeat_weekdays=scheduled.repeat_weekdays.copy(),
+            )
+        )
+
+    async def _start_scheduled_vc(self, scheduled: ScheduledVC) -> None:
+        if scheduled.id is None:
+            return
+        guild = self._resolve_guild(scheduled.guild_id)
+        if guild is None:
+            await self.config_repo.update_scheduled_vc_status(scheduled.id, "failed")
+            await self._publish_scheduled_vc_notification("error", "Scheduled VC error", "Guild is not available.", scheduled)
+            return
+        category = guild.get_channel(scheduled.category_id) if scheduled.category_id is not None else None
+        if scheduled.category_id is not None and not isinstance(category, discord.CategoryChannel):
+            await self.config_repo.update_scheduled_vc_status(scheduled.id, "failed")
+            await self._publish_scheduled_vc_notification("error", "Scheduled VC error", "Configured category is not available.", scheduled)
+            return
+        try:
+            create_kwargs: dict[str, Any] = {
+                "category": category if isinstance(category, discord.CategoryChannel) else None,
+                "user_limit": max(0, min(99, scheduled.user_limit)),
+                "reason": "scheduled VC start",
+            }
+            if scheduled.bitrate is not None:
+                create_kwargs["bitrate"] = scheduled.bitrate
+            channel = await guild.create_voice_channel(scheduled.vc_name, **create_kwargs)
+        except discord.Forbidden:
+            await self.config_repo.update_scheduled_vc_status(scheduled.id, "failed")
+            await self._publish_scheduled_vc_notification("permission_denied", "Scheduled VC permission denied", "Bot cannot create the scheduled VC.", scheduled)
+            return
+        except discord.HTTPException:
+            self.logger.exception("scheduled VC create failed: scheduled_id=%s", scheduled.id)
+            await self.config_repo.update_scheduled_vc_status(scheduled.id, "failed")
+            await self._publish_scheduled_vc_notification("error", "Scheduled VC error", "Failed to create the scheduled VC.", scheduled)
+            return
+
+        self.auto_personal_root_channels.discard(channel.id)
+        status = "active" if scheduled.end_at is not None else "completed"
+        await self.config_repo.update_scheduled_vc_start_result(scheduled.id, channel_id=channel.id, status=status)
+        if scheduled.repeat_mode != "none":
+            await self._create_next_scheduled_occurrence(scheduled)
+
+        description = scheduled.description.strip() or "Scheduled VC is ready."
+        if scheduled.end_at is not None:
+            description += f"\nEnd: {discord.utils.format_dt(scheduled.end_at, style='F')}"
+        embed = discord.Embed(title=f"Scheduled VC started: {scheduled.vc_name}", description=description, color=discord.Color.green())
+        await self._send_scheduled_vc_message(channel, scheduled, embed)
+        notice_channel = await self._resolve_notice_channel(scheduled.guild_id)
+        if notice_channel is not None:
+            await self._send_scheduled_vc_message(notice_channel, scheduled, embed)
+        await self._send_scheduled_vc_dms(scheduled, embed)
+        await self._record_scheduled_vc_timeline(scheduled, channel, "scheduled_vc_created", f"Scheduled VC {scheduled.vc_name} was created.")
+        await self._publish_scheduled_vc_notification(
+            "scheduled_vc_started",
+            "Scheduled VC started",
+            f"{scheduled.vc_name} was created.",
+            scheduled,
+            channel_id=channel.id,
+        )
+
+    async def _process_active_scheduled_vc(self, scheduled: ScheduledVC, now: datetime) -> None:
+        if scheduled.id is None or scheduled.end_at is None or scheduled.created_channel_id is None:
+            return
+        channel = self._resolve_voice_channel(scheduled.created_channel_id)
+        if channel is None:
+            await self.config_repo.update_scheduled_vc_status(scheduled.id, "completed")
+            return
+        remaining = int((scheduled.end_at - now).total_seconds())
+        for minutes, already_sent in ((15, scheduled.pre_notice_15_sent), (5, scheduled.pre_notice_5_sent), (3, scheduled.pre_notice_3_sent)):
+            if not already_sent and 0 < remaining <= minutes * 60:
+                embed = discord.Embed(
+                    title=f"Scheduled VC ends in {minutes} minutes",
+                    description=f"**{scheduled.vc_name}** will end soon.",
+                    color=discord.Color.orange(),
+                )
+                await self._send_embed(channel, embed)
+                await self.config_repo.mark_scheduled_vc_pre_notice(scheduled.id, minutes)
+        if remaining > 0:
+            return
+        session = self.sessions.get(channel.id)
+        if session is not None:
+            await self._end_session(session)
+        try:
+            await channel.delete(reason="scheduled VC end")
+        except discord.Forbidden:
+            await self._publish_scheduled_vc_notification("permission_denied", "Scheduled VC permission denied", "Bot cannot delete the scheduled VC.", scheduled, channel_id=channel.id)
+            return
+        except discord.HTTPException:
+            self.logger.exception("scheduled VC delete failed: scheduled_id=%s", scheduled.id)
+            await self._publish_scheduled_vc_notification("error", "Scheduled VC error", "Failed to delete the scheduled VC.", scheduled, channel_id=channel.id)
+            return
+        await self.config_repo.update_scheduled_vc_status(scheduled.id, "completed")
+        await self._publish_scheduled_vc_notification(
+            "scheduled_vc_ended",
+            "Scheduled VC ended",
+            f"{scheduled.vc_name} ended.",
+            scheduled,
+            channel_id=channel.id,
+        )
+
     async def _start_session(
         self,
         channel: discord.VoiceChannel,
@@ -1165,6 +1799,7 @@ class SessionManager:
         )
 
     async def _end_session(self, session: LiveSession) -> None:
+        self._cancel_solo_cleanup_by_channel_id(session.root_channel_id)
         now = utcnow()
         members: list[CompletedMember] = []
         total_talk = 0
@@ -1253,6 +1888,7 @@ class SessionManager:
         if session is None:
             return
         if channel.id == session.root_channel_id:
+            self._cancel_solo_cleanup_by_channel_id(channel.id)
             self._unregister_session(session)
             await self.config_repo.delete_session_snapshot(session.session_id)
         else:
@@ -1344,8 +1980,17 @@ class SessionManager:
             return True
         if session.starter_user_id == user_id:
             return True
+        if session.access_mode == "invite" and str(user_id) in session.invited_user_ids:
+            return True
+        if session.access_mode == "role":
+            guild = self._resolve_guild(session.guild_id)
+            member = guild.get_member(user_id) if guild is not None else None
+            if member is not None and any(str(role.id) in session.access_role_ids for role in member.roles):
+                return True
         if session.panel_creator_id == user_id:
             return True
+        if session.access_mode in {"invite", "role"}:
+            return False
         participant = session.participants.get(user_id)
         return participant is not None and participant.current_channel_id is not None
 
@@ -1353,6 +1998,135 @@ class SessionManager:
         if session.starter_user_id == user_id:
             return True
         return await self.is_guild_admin(session.guild_id, user_id)
+
+    async def _apply_access_overwrites(self, session: LiveSession) -> None:
+        guild = self._resolve_guild(session.guild_id)
+        if guild is None:
+            return
+        channel_ids = [session.root_channel_id, *session.team_channels.values()]
+        default_role = guild.default_role
+        bot_member = guild.me
+        for channel_id in channel_ids:
+            channel = self._resolve_voice_channel(channel_id)
+            if channel is None:
+                continue
+            try:
+                if session.access_mode == "public":
+                    await channel.set_permissions(default_role, overwrite=None, reason="VC access set to public")
+                    for user_id in session.invited_user_ids:
+                        member = guild.get_member(int(user_id)) if str(user_id).isdigit() else None
+                        if member is not None:
+                            await channel.set_permissions(member, overwrite=None, reason="VC access set to public")
+                    for role_id in session.access_role_ids:
+                        role = guild.get_role(int(role_id)) if str(role_id).isdigit() else None
+                        if role is not None:
+                            await channel.set_permissions(role, overwrite=None, reason="VC access set to public")
+                    continue
+
+                await channel.set_permissions(
+                    default_role,
+                    overwrite=discord.PermissionOverwrite(view_channel=False, connect=False),
+                    reason="VC access restricted",
+                )
+                if bot_member is not None:
+                    await channel.set_permissions(
+                        bot_member,
+                        overwrite=discord.PermissionOverwrite(view_channel=True, connect=True, manage_channels=True, send_messages=True),
+                        reason="VC access restricted",
+                    )
+                starter = guild.get_member(session.starter_user_id)
+                if starter is not None:
+                    await channel.set_permissions(
+                        starter,
+                        overwrite=discord.PermissionOverwrite(view_channel=True, connect=True),
+                        reason="VC access restricted",
+                    )
+                if session.access_mode == "invite":
+                    for user_id in session.invited_user_ids:
+                        member = guild.get_member(int(user_id)) if str(user_id).isdigit() else None
+                        if member is not None:
+                            await channel.set_permissions(
+                                member,
+                                overwrite=discord.PermissionOverwrite(view_channel=True, connect=True),
+                                reason="VC invite access updated",
+                            )
+                    for role_id in session.access_role_ids:
+                        role = guild.get_role(int(role_id)) if str(role_id).isdigit() else None
+                        if role is not None:
+                            await channel.set_permissions(role, overwrite=None, reason="VC invite access updated")
+                if session.access_mode == "role":
+                    for role_id in session.access_role_ids:
+                        role = guild.get_role(int(role_id)) if str(role_id).isdigit() else None
+                        if role is not None:
+                            await channel.set_permissions(
+                                role,
+                                overwrite=discord.PermissionOverwrite(view_channel=True, connect=True),
+                                reason="VC role access updated",
+                            )
+                    for user_id in session.invited_user_ids:
+                        member = guild.get_member(int(user_id)) if str(user_id).isdigit() else None
+                        if member is not None and member.id != session.starter_user_id:
+                            await channel.set_permissions(member, overwrite=None, reason="VC role access updated")
+            except discord.Forbidden:
+                self.logger.exception("VC access permission update denied: session_key=%s channel_id=%s", session.session_key, channel_id)
+                raise PermissionError("Bot cannot update channel permissions.")
+            except discord.HTTPException as exc:
+                self.logger.exception("VC access permission update failed: session_key=%s channel_id=%s", session.session_key, channel_id)
+                raise RuntimeError("Failed to update channel permissions.") from exc
+
+    async def update_access_control(
+        self,
+        root_channel_id: int,
+        actor_id: int,
+        *,
+        access_mode: str,
+        invited_user_ids: list[str] | None = None,
+        access_role_ids: list[str] | None = None,
+    ) -> str:
+        session = self.sessions.get(root_channel_id)
+        if session is None:
+            raise ValueError("Session not found.")
+        if not await self.can_edit_session(session, actor_id):
+            raise PermissionError("Access control permission denied.")
+        mode = access_mode if access_mode in {"public", "invite", "role"} else "public"
+        old_invited = set(session.invited_user_ids)
+        old_roles = set(session.access_role_ids)
+        final_invited = {str(item).strip() for item in (invited_user_ids or sorted(session.invited_user_ids)) if str(item).strip().isdigit()}
+        final_roles = {str(item).strip() for item in (access_role_ids or sorted(session.access_role_ids)) if str(item).strip().isdigit()}
+        session.access_mode = mode
+        session.invited_user_ids = final_invited | old_invited
+        session.access_role_ids = final_roles | old_roles
+        await self._apply_access_overwrites(session)
+        session.invited_user_ids = final_invited if mode == "invite" else set()
+        session.access_role_ids = final_roles if mode == "role" else set()
+        await self._persist_and_broadcast(session)
+        await self._record_timeline_event(
+            session,
+            "access_changed",
+            f"Access mode changed to {mode}.",
+            user_id=actor_id,
+            user_name=str(actor_id),
+            payload={
+                "access_mode": mode,
+                "invited_user_ids": sorted(session.invited_user_ids),
+                "access_role_ids": sorted(session.access_role_ids),
+            },
+        )
+        await self._publish_important_event(
+            "access_changed",
+            "VC access changed",
+            f"{session.root_channel_name} access mode changed to {mode}.",
+            session,
+            extra_payload={"access_mode": mode},
+        )
+        return f"Access mode updated to {mode}."
+
+    async def add_invited_users(self, root_channel_id: int, actor_id: int, user_ids: list[str]) -> str:
+        session = self.sessions.get(root_channel_id)
+        if session is None:
+            raise ValueError("Session not found.")
+        merged = sorted(session.invited_user_ids | {str(item).strip() for item in user_ids if str(item).strip().isdigit()})
+        return await self.update_access_control(root_channel_id, actor_id, access_mode="invite", invited_user_ids=merged)
 
     async def can_assign_others(self, session: LiveSession, user_id: int) -> bool:
         if session.starter_user_id == user_id:
@@ -1487,10 +2261,13 @@ class SessionManager:
                     ),
                 )
             await self._persist_and_broadcast(session)
+            actor = guild.get_member(actor_id)
             await self._record_timeline_event(
                 session,
                 "teams_split",
                 "Teams were split.",
+                user_id=actor_id,
+                user_name=actor.display_name if actor is not None else str(actor_id),
                 payload={"messages": moved_messages},
             )
             await self._publish_session_event(session, "teams_split", {"messages": moved_messages})
@@ -1688,12 +2465,14 @@ class SessionManager:
         if existing_id:
             existing = self._resolve_voice_channel(existing_id)
             if existing is not None:
+                await self._apply_access_overwrites(session)
                 return existing
         target_name = f"{root_channel.name}-{team_name}"
         for channel in root_channel.category.voice_channels if root_channel.category else []:
             if channel.name == target_name:
                 session.team_channels[team_name] = channel.id
                 self.channel_to_root[channel.id] = session.root_channel_id
+                await self._apply_access_overwrites(session)
                 return channel
         try:
             created = await root_channel.guild.create_voice_channel(
@@ -1709,12 +2488,160 @@ class SessionManager:
             return None
         session.team_channels[team_name] = created.id
         self.channel_to_root[created.id] = session.root_channel_id
+        await self._apply_access_overwrites(session)
         return created
+
+    def _solo_cleanup_mode(self, config: GuildConfig) -> str:
+        if config.solo_cleanup_mode in {"disabled", "notify_only", "delete_warning", "repeat_notice"}:
+            return config.solo_cleanup_mode
+        return "notify_only"
+
+    def _channel_name_matches_personal_session(self, session: LiveSession, channel: discord.VoiceChannel) -> bool:
+        return channel.name == f"{session.starter_user_name}縺ｮVC" or channel.name == f"{session.owner_user_name}縺ｮVC"
+
+    def _get_solo_cleanup_member(self, session: LiveSession) -> discord.Member | None:
+        root_channel = self._resolve_voice_channel(session.root_channel_id)
+        if root_channel is None or not self._is_managed_voice_channel(root_channel, include_base=False):
+            return None
+        if (
+            root_channel.id not in self.auto_personal_root_channels
+            and not self._channel_name_matches_personal_session(session, root_channel)
+        ):
+            return None
+        all_members: list[discord.Member] = [member for member in root_channel.members if not member.bot]
+        for channel_id in session.team_channels.values():
+            team_channel = self._resolve_voice_channel(channel_id)
+            if team_channel is not None:
+                all_members.extend(member for member in team_channel.members if not member.bot)
+        if len(all_members) != 1:
+            return None
+        member = all_members[0]
+        if member.voice is None or member.voice.channel is None or member.voice.channel.id != root_channel.id:
+            return None
+        return member
+
+    async def _refresh_solo_cleanup_for_session(self, session: LiveSession) -> None:
+        config = self.guild_configs.get(session.guild_id)
+        if config is None:
+            config = await self.get_guild_config(session.guild_id)
+        if config is None or self._solo_cleanup_mode(config) == "disabled":
+            self._cancel_solo_cleanup_by_channel_id(session.root_channel_id)
+            return
+        member = self._get_solo_cleanup_member(session)
+        if member is None:
+            self._cancel_solo_cleanup_by_channel_id(session.root_channel_id)
+            return
+        if session.root_channel_id in self.solo_cleanup_tasks:
+            return
+        self._schedule_solo_cleanup(session, config)
+
+    def _schedule_solo_cleanup(self, session: LiveSession, config: GuildConfig) -> None:
+        root_channel_id = session.root_channel_id
+        mode = self._solo_cleanup_mode(config)
+        notice_after = max(60, int(config.solo_notice_after_sec))
+        warning_after = max(60, int(config.solo_delete_warning_after_sec))
+        repeat_after = max(300, int(config.solo_repeat_notice_sec))
+        session_key = session.session_key
+
+        async def runner() -> None:
+            handle = self.solo_cleanup_tasks[root_channel_id]
+            try:
+                await asyncio.sleep(notice_after)
+                current = self.sessions_by_key.get(session_key)
+                if current is None:
+                    return
+                member = self._get_solo_cleanup_member(current)
+                if member is None:
+                    return
+                handle.notice_sent = True
+                await self._send_solo_cleanup_notice(current, member, warning=False)
+                if mode == "delete_warning":
+                    await asyncio.sleep(warning_after)
+                    current = self.sessions_by_key.get(session_key)
+                    if current is None:
+                        return
+                    member = self._get_solo_cleanup_member(current)
+                    if member is None:
+                        return
+                    handle.warning_sent = True
+                    await self._send_solo_cleanup_notice(current, member, warning=True)
+                    return
+                if mode == "repeat_notice":
+                    while True:
+                        await asyncio.sleep(repeat_after)
+                        current = self.sessions_by_key.get(session_key)
+                        if current is None:
+                            return
+                        member = self._get_solo_cleanup_member(current)
+                        if member is None:
+                            return
+                        await self._send_solo_cleanup_notice(current, member, warning=False)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                self.logger.exception("solo VC cleanup task failed: session_key=%s", session_key)
+            finally:
+                self.solo_cleanup_tasks.pop(root_channel_id, None)
+
+        self.solo_cleanup_tasks[root_channel_id] = SoloCleanupHandle(task=asyncio.create_task(runner()))
+
+    async def _send_solo_cleanup_notice(
+        self,
+        session: LiveSession,
+        member: discord.Member,
+        *,
+        warning: bool,
+    ) -> None:
+        channel = self._resolve_voice_channel(session.root_channel_id)
+        if channel is None:
+            return
+        title = "Solo VC deletion warning" if warning else "Solo VC invite suggestion"
+        description = (
+            f"{member.mention} has been alone in **{channel.name}** for a while.\n"
+            "Consider mentioning other users and inviting them to join this VC."
+        )
+        if warning:
+            description += "\nDeletion may be announced by your server policy if this VC remains solo."
+        embed = discord.Embed(title=title, description=description, color=discord.Color.orange())
+        await self._send_embed(channel, embed)
+        await self._send_solo_cleanup_dm(session, embed)
+
+    async def _send_solo_cleanup_dm(self, session: LiveSession, embed: discord.Embed) -> None:
+        if self.bot is None:
+            return
+        user: discord.User | discord.Member | None = self.bot.get_user(session.starter_user_id)
+        if user is None:
+            guild = self._resolve_guild(session.guild_id)
+            user = guild.get_member(session.starter_user_id) if guild is not None else None
+        if user is None:
+            try:
+                user = await self.bot.fetch_user(session.starter_user_id)
+            except (discord.Forbidden, discord.HTTPException, discord.NotFound):
+                return
+        try:
+            await user.send(embed=embed)
+        except (discord.Forbidden, discord.HTTPException):
+            self.logger.info("solo VC cleanup DM failed: guild=%s user=%s", session.guild_id, session.starter_user_id)
+
+    def _cancel_solo_cleanup_by_channel_id(self, channel_id: int) -> None:
+        handle = self.solo_cleanup_tasks.pop(channel_id, None)
+        if handle is not None:
+            handle.task.cancel()
+
+    async def _is_active_temporary_event_channel(self, channel_id: int) -> bool:
+        try:
+            active_items = await self.config_repo.list_active_scheduled_vcs()
+        except Exception:
+            self.logger.exception("active scheduled VC lookup failed: channel_id=%s", channel_id)
+            return False
+        return any(item.created_channel_id == channel_id for item in active_items)
 
     async def _schedule_empty_cleanup(self, channel: discord.VoiceChannel) -> None:
         if channel.id in self.deletion_tasks:
             return
         if not self._is_managed_voice_channel(channel, include_base=False):
+            return
+        if await self._is_active_temporary_event_channel(channel.id):
             return
         config = await self.get_guild_config(channel.guild.id)
         if config is None:
@@ -1828,6 +2755,7 @@ class SessionManager:
         for participant in session.participants.values():
             await self.websocket_hub.broadcast(f"user:{participant.user_id}", "session_update", payload)
         await self._broadcast_global_state()
+        await self._refresh_solo_cleanup_for_session(session)
 
     async def _broadcast_global_state(self) -> None:
         payload = {"active_sessions": [session.to_payload() for session in self.sessions.values()]}
@@ -1946,6 +2874,8 @@ class SessionManager:
             self.channel_to_root[channel_id] = session.root_channel_id
 
     def _unregister_session(self, session: LiveSession) -> None:
+        self._cancel_solo_cleanup_by_channel_id(session.root_channel_id)
+        self.auto_personal_root_channels.discard(session.root_channel_id)
         self.sessions.pop(session.root_channel_id, None)
         self.sessions_by_key.pop(session.session_key, None)
         self.channel_to_root.pop(session.root_channel_id, None)

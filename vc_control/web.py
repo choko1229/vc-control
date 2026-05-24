@@ -5,9 +5,11 @@ import hashlib
 import hmac
 import os
 import secrets
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode
+from zoneinfo import ZoneInfo
 
 import discord
 import httpx
@@ -18,8 +20,11 @@ from starlette.middleware.sessions import SessionMiddleware
 from starlette.templating import Jinja2Templates
 
 from vc_control.bootstrap import AppContainer
-from vc_control.models import GuildConfig, OAuthProfile, SetupPayload
+from vc_control.models import GuildConfig, OAuthProfile, ScheduledVC, SetupPayload
 from vc_control.utils import format_duration, from_iso, make_session_key, normalize_ids, safe_int, utcnow
+
+
+LOCAL_TZ = ZoneInfo("Asia/Tokyo")
 
 
 def _default_dashboard_host() -> str:
@@ -204,6 +209,40 @@ def _serialize_guild_channels(container: AppContainer, guild_id: int) -> dict[st
     }
 
 
+def _serialize_guild_members(container: AppContainer, guild_id: int) -> list[dict[str, str]]:
+    if container.bot is None:
+        return []
+    guild = container.bot.get_guild(guild_id)
+    if guild is None:
+        return []
+    members = [
+        {
+            "id": str(member.id),
+            "name": member.display_name,
+            "username": str(member),
+        }
+        for member in guild.members
+        if not member.bot
+    ]
+    members.sort(key=lambda item: item["name"].lower())
+    return members
+
+
+def _serialize_guild_roles(container: AppContainer, guild_id: int) -> list[dict[str, str]]:
+    if container.bot is None:
+        return []
+    guild = container.bot.get_guild(guild_id)
+    if guild is None:
+        return []
+    roles = [
+        {"id": str(role.id), "name": role.name}
+        for role in guild.roles
+        if not role.is_default()
+    ]
+    roles.sort(key=lambda item: item["name"].lower())
+    return roles
+
+
 def _decorate_guild_rows(rows: list[dict[str, Any]], container: AppContainer) -> list[dict[str, Any]]:
     result: list[dict[str, Any]] = []
     for row in rows:
@@ -237,6 +276,79 @@ def _build_guild_config_defaults(guild_id: int, guild_name: str, current: GuildC
     if current is not None:
         return current
     return GuildConfig(guild_id=guild_id, guild_name=guild_name)
+
+
+def _normalize_solo_cleanup_mode(value: Any, default: str = "notify_only") -> str:
+    mode = str(value or default).strip()
+    if mode not in {"disabled", "notify_only", "delete_warning", "repeat_notice"}:
+        return default
+    return mode
+
+
+def _normalize_ranking_frequencies(values: list[Any]) -> list[str]:
+    allowed = {"daily", "weekly", "monthly", "manual"}
+    result = [str(value).strip() for value in values if str(value).strip() in allowed]
+    return result
+
+
+def _list_payload(value: Any) -> list[Any]:
+    if isinstance(value, list):
+        return value
+    if value is None:
+        return []
+    return [value]
+
+
+def _normalize_ranking_targets(values: list[Any]) -> list[str]:
+    allowed = {"top_talkers", "top_hosts", "team_splits", "night_owls"}
+    result = [str(value).strip() for value in values if str(value).strip() in allowed]
+    return result or ["top_talkers", "top_hosts", "team_splits", "night_owls"]
+
+
+def _normalize_hhmm(value: Any, default: str = "21:00") -> str:
+    text = str(value or default).strip()
+    try:
+        hour_text, minute_text = text.split(":", 1)
+        hour = max(0, min(23, int(hour_text)))
+        minute = max(0, min(59, int(minute_text)))
+    except ValueError:
+        return default
+    return f"{hour:02d}:{minute:02d}"
+
+
+def _normalize_repeat_mode(value: Any) -> str:
+    mode = str(value or "none").strip()
+    if mode not in {"none", "daily", "weekly", "monthly", "weekdays"}:
+        return "none"
+    return mode
+
+
+def _parse_datetime_local(value: Any) -> datetime | None:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    try:
+        parsed = datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=LOCAL_TZ).astimezone(UTC)
+    return parsed.astimezone(UTC)
+
+
+def _format_datetime_input(value: datetime | None) -> str:
+    if value is None:
+        return ""
+    return value.astimezone(LOCAL_TZ).strftime("%Y-%m-%dT%H:%M")
+
+
+async def _admin_guilds_for_profile(container: AppContainer, profile: OAuthProfile) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for guild in _decorate_bot_guilds(container):
+        guild_id = safe_int(guild.get("id"))
+        if await container.session_manager.is_guild_admin(guild_id, profile.user_id):
+            rows.append(guild)
+    return rows
 
 
 def _build_guild_diagnostics(container: AppContainer, guild_id: int, config: GuildConfig | None) -> list[dict[str, str]]:
@@ -525,6 +637,9 @@ def _build_session_ui_payload(container: AppContainer, session: dict[str, Any] |
         "notice_channel_id": str(safe_int(payload.get("notice_channel_id"))) if payload.get("notice_channel_id") is not None else None,
         "notice_message_id": str(safe_int(payload.get("notice_message_id"))) if payload.get("notice_message_id") is not None else None,
         "team_assignments": team_assignments,
+        "access_mode": str(payload.get("access_mode") or "public"),
+        "invited_user_ids": [str(item) for item in payload.get("invited_user_ids", [])],
+        "access_role_ids": [str(item) for item in payload.get("access_role_ids", [])],
         "guild": _serialize_guild_identity(guild, guild_id, guild_name),
         "root_channel": {
             "id": str(root_channel_id),
@@ -998,6 +1113,127 @@ def create_app(container: AppContainer) -> FastAPI:
             },
         )
 
+    @app.get("/dashboard/reservations", response_class=HTMLResponse, response_model=None)
+    async def reservations_page(request: Request, guild_id: int | None = None) -> Response:
+        profile = await _require_profile(request)
+        guilds = await _admin_guilds_for_profile(container, profile)
+        selected_guild_id = guild_id or (safe_int(guilds[0]["id"]) if guilds else 0)
+        if selected_guild_id and not await container.session_manager.is_guild_admin(selected_guild_id, profile.user_id):
+            raise HTTPException(status_code=403, detail="Server administrator permission is required.")
+        selected_guild = _resolve_guild(container, selected_guild_id) if selected_guild_id else None
+        channel_catalog = _serialize_guild_channels(container, selected_guild_id) if selected_guild_id else {"categories": [], "voice_channels": [], "text_channels": []}
+        selected_config = await container.config_repo.get_guild_config(selected_guild_id) if selected_guild_id else None
+        member_catalog = _serialize_guild_members(container, selected_guild_id) if selected_guild_id else []
+        schedules = await container.config_repo.list_scheduled_vcs(selected_guild_id or None)
+        return render(
+            request,
+            "reservations.html",
+            {
+                "title": "VC予約",
+                "page_name": "reservations",
+                "guild_id": str(selected_guild_id) if selected_guild_id else "",
+                "guilds": guilds,
+                "selected_guild_id": selected_guild_id,
+                "selected_guild": selected_guild,
+                "selected_config": selected_config,
+                "channel_catalog": channel_catalog,
+                "member_catalog": member_catalog,
+                "schedules": schedules,
+                "format_datetime_input": _format_datetime_input,
+            },
+        )
+
+    @app.post("/dashboard/voice/create", response_model=None)
+    async def create_web_voice_channel(request: Request) -> Response:
+        profile = await _require_profile(request)
+        form = await request.form()
+        guild_id = safe_int(form.get("guild_id"))
+        if not await container.session_manager.is_guild_admin(guild_id, profile.user_id):
+            raise HTTPException(status_code=403, detail="Server administrator permission is required.")
+        vc_type = str(form.get("vc_type", "personal")).strip()
+        end_at = _parse_datetime_local(form.get("end_at"))
+        if vc_type == "event" and end_at is None:
+            raise HTTPException(status_code=400, detail="Temporary event VC requires end time.")
+        try:
+            channel = await container.session_manager.create_web_voice_channel(
+                guild_id=guild_id,
+                actor_id=profile.user_id,
+                actor_name=profile.display_name,
+                vc_type=vc_type,
+                owner_user_id=safe_int(form.get("owner_user_id")) or None,
+                vc_name=str(form.get("vc_name", "")).strip() or None,
+                user_limit=safe_int(form.get("user_limit"), 0),
+                bitrate=safe_int(form.get("bitrate")) or None,
+                end_at=end_at,
+                description=str(form.get("description", "")).strip(),
+            )
+        except PermissionError as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        return RedirectResponse(f"/dashboard/voice/{guild_id}/{channel.id}", status_code=302)
+
+    @app.post("/dashboard/reservations", response_model=None)
+    async def create_reservation(request: Request) -> Response:
+        profile = await _require_profile(request)
+        form = await request.form()
+        guild_id = safe_int(form.get("guild_id"))
+        if not await container.session_manager.is_guild_admin(guild_id, profile.user_id):
+            raise HTTPException(status_code=403, detail="Server administrator permission is required.")
+        guild = _resolve_guild(container, guild_id)
+        if guild is None:
+            raise HTTPException(status_code=404, detail="Guild is not available.")
+        start_at = _parse_datetime_local(form.get("start_at"))
+        if start_at is None:
+            raise HTTPException(status_code=400, detail="Start time is required.")
+        end_at = _parse_datetime_local(form.get("end_at"))
+        if end_at is not None and end_at <= start_at:
+            raise HTTPException(status_code=400, detail="End time must be later than start time.")
+        repeat_weekdays = [safe_int(item, -1) for item in form.getlist("repeat_weekdays")]
+        repeat_weekdays = [item for item in repeat_weekdays if 0 <= item <= 6]
+        mention_targets = [
+            chunk.strip()
+            for chunk in str(form.get("mention_targets", "")).replace("\n", ",").split(",")
+            if chunk.strip()
+        ]
+        mention_type = str(form.get("mention_type", "none")).strip()
+        if mention_type not in {"none", "user", "role", "everyone", "here"}:
+            mention_type = "none"
+        scheduled = ScheduledVC(
+            id=None,
+            guild_id=guild.id,
+            guild_name=guild.name,
+            creator_user_id=profile.user_id,
+            creator_user_name=profile.display_name,
+            vc_name=str(form.get("vc_name", "")).strip() or "Scheduled VC",
+            category_id=safe_int(form.get("category_id")) or None,
+            user_limit=max(0, min(99, safe_int(form.get("user_limit"), 0))),
+            bitrate=safe_int(form.get("bitrate")) or None,
+            mention_type=mention_type,
+            mention_targets=mention_targets,
+            description=str(form.get("description", "")).strip(),
+            start_at=start_at,
+            end_at=end_at,
+            repeat_mode=_normalize_repeat_mode(form.get("repeat_mode")),
+            repeat_weekdays=repeat_weekdays,
+        )
+        await container.config_repo.create_scheduled_vc(scheduled)
+        return RedirectResponse(f"/dashboard/reservations?guild_id={guild.id}&saved=1", status_code=302)
+
+    @app.post("/dashboard/reservations/{scheduled_id}/delete", response_model=None)
+    async def delete_reservation(request: Request, scheduled_id: int) -> Response:
+        profile = await _require_profile(request)
+        schedules = await container.config_repo.list_scheduled_vcs(limit=1000)
+        scheduled = next((item for item in schedules if item.id == scheduled_id), None)
+        if scheduled is None:
+            raise HTTPException(status_code=404, detail="Reservation not found.")
+        if not await container.session_manager.is_guild_admin(scheduled.guild_id, profile.user_id):
+            raise HTTPException(status_code=403, detail="Server administrator permission is required.")
+        await container.config_repo.delete_scheduled_vc(scheduled_id)
+        return RedirectResponse(f"/dashboard/reservations?guild_id={scheduled.guild_id}&deleted=1", status_code=302)
+
     @app.get("/dashboard/voice/{guild_id}/{root_channel_id}", response_class=HTMLResponse, response_model=None)
     async def voice_dashboard(request: Request, guild_id: int, root_channel_id: int) -> Response:
         profile = await _require_profile(request)
@@ -1048,6 +1284,8 @@ def create_app(container: AppContainer) -> FastAPI:
                 "participants": state["participants"],
                 "teams": state["teams"],
                 "unassigned_members": state["unassigned_members"],
+                "member_catalog": _serialize_guild_members(container, guild_id),
+                "role_catalog": _serialize_guild_roles(container, guild_id),
                 "can_edit": can_edit,
                 "can_assign_others": can_assign_others,
                 "can_manage": can_edit,
@@ -1210,6 +1448,16 @@ def create_app(container: AppContainer) -> FastAPI:
             notification_channel_id=safe_int(form.get("notification_channel_id")) or None,
             first_empty_notice_sec=safe_int(form.get("first_empty_notice_sec"), 30),
             final_delete_sec=safe_int(form.get("final_delete_sec"), 90),
+            solo_cleanup_mode=_normalize_solo_cleanup_mode(form.get("solo_cleanup_mode")),
+            solo_notice_after_sec=max(60, safe_int(form.get("solo_notice_after_sec"), 3600)),
+            solo_delete_warning_after_sec=max(60, safe_int(form.get("solo_delete_warning_after_sec"), 1800)),
+            solo_repeat_notice_sec=max(300, safe_int(form.get("solo_repeat_notice_sec"), 3600)),
+            ranking_post_enabled=str(form.get("ranking_post_enabled", "")) == "on",
+            ranking_post_channel_id=safe_int(form.get("ranking_post_channel_id")) or None,
+            ranking_post_frequencies=_normalize_ranking_frequencies(form.getlist("ranking_post_frequencies")),
+            ranking_post_time=_normalize_hhmm(form.get("ranking_post_time")),
+            ranking_post_targets=_normalize_ranking_targets(form.getlist("ranking_post_targets")),
+            ranking_post_last_keys=current.ranking_post_last_keys.copy() if current else {},
             team_mode=str(form.get("team_mode", "custom")).strip(),
             team_names=[name.strip() for name in str(form.get("team_names", "A,B,C,D")).split(",") if name.strip()],
             enabled=str(form.get("enabled", "")) == "on",
@@ -1217,6 +1465,12 @@ def create_app(container: AppContainer) -> FastAPI:
         await container.config_repo.upsert_guild_config(config)
         await container.session_manager.refresh_guild_configs()
         return RedirectResponse(f"/admin?guild_id={guild_id}&saved=1", status_code=302)
+
+    @app.post("/admin/guilds/{guild_id}/rankings/post", response_model=None)
+    async def post_guild_rankings(request: Request, guild_id: int) -> Response:
+        await _require_admin(request, container)
+        await container.session_manager.post_activity_rankings(guild_id, frequency="manual")
+        return RedirectResponse(f"/admin?guild_id={guild_id}&rankings_posted=1", status_code=302)
 
     @app.post("/api/admin/settings")
     async def api_update_admin_settings(request: Request) -> JSONResponse:
@@ -1277,6 +1531,16 @@ def create_app(container: AppContainer) -> FastAPI:
             notification_channel_id=safe_int(payload["notification_channel_id"]) or None if "notification_channel_id" in payload else base_config.notification_channel_id,
             first_empty_notice_sec=safe_int(payload.get("first_empty_notice_sec", base_config.first_empty_notice_sec), base_config.first_empty_notice_sec),
             final_delete_sec=safe_int(payload.get("final_delete_sec", base_config.final_delete_sec), base_config.final_delete_sec),
+            solo_cleanup_mode=_normalize_solo_cleanup_mode(payload.get("solo_cleanup_mode", base_config.solo_cleanup_mode), base_config.solo_cleanup_mode),
+            solo_notice_after_sec=max(60, safe_int(payload.get("solo_notice_after_sec", base_config.solo_notice_after_sec), base_config.solo_notice_after_sec)),
+            solo_delete_warning_after_sec=max(60, safe_int(payload.get("solo_delete_warning_after_sec", base_config.solo_delete_warning_after_sec), base_config.solo_delete_warning_after_sec)),
+            solo_repeat_notice_sec=max(300, safe_int(payload.get("solo_repeat_notice_sec", base_config.solo_repeat_notice_sec), base_config.solo_repeat_notice_sec)),
+            ranking_post_enabled=bool(payload.get("ranking_post_enabled", base_config.ranking_post_enabled)),
+            ranking_post_channel_id=safe_int(payload.get("ranking_post_channel_id", base_config.ranking_post_channel_id)) or None,
+            ranking_post_frequencies=_normalize_ranking_frequencies(_list_payload(payload.get("ranking_post_frequencies", base_config.ranking_post_frequencies))),
+            ranking_post_time=_normalize_hhmm(payload.get("ranking_post_time", base_config.ranking_post_time), base_config.ranking_post_time),
+            ranking_post_targets=_normalize_ranking_targets(_list_payload(payload.get("ranking_post_targets", base_config.ranking_post_targets))),
+            ranking_post_last_keys=base_config.ranking_post_last_keys.copy(),
             team_mode=str(payload.get("team_mode", base_config.team_mode)).strip() or base_config.team_mode,
             team_names=[name.strip() for name in str(payload.get("team_names", ",".join(base_config.team_names))).split(",") if name.strip()],
             enabled=bool(payload.get("enabled", base_config.enabled)),
@@ -1294,12 +1558,29 @@ def create_app(container: AppContainer) -> FastAPI:
                     "notification_channel_id": config.notification_channel_id,
                     "first_empty_notice_sec": config.first_empty_notice_sec,
                     "final_delete_sec": config.final_delete_sec,
+                    "solo_cleanup_mode": config.solo_cleanup_mode,
+                    "solo_notice_after_sec": config.solo_notice_after_sec,
+                    "solo_delete_warning_after_sec": config.solo_delete_warning_after_sec,
+                    "solo_repeat_notice_sec": config.solo_repeat_notice_sec,
+                    "ranking_post_enabled": config.ranking_post_enabled,
+                    "ranking_post_channel_id": config.ranking_post_channel_id,
+                    "ranking_post_frequencies": config.ranking_post_frequencies,
+                    "ranking_post_time": config.ranking_post_time,
+                    "ranking_post_targets": config.ranking_post_targets,
                     "team_mode": config.team_mode,
                     "team_names": config.team_names,
                     "enabled": config.enabled,
                 },
             }
         )
+
+    @app.post("/api/admin/guilds/{guild_id}/rankings/post")
+    async def api_post_admin_guild_rankings(request: Request, guild_id: int) -> JSONResponse:
+        await _require_admin(request, container)
+        sent = await container.session_manager.post_activity_rankings(guild_id, frequency="manual")
+        if not sent:
+            raise HTTPException(status_code=400, detail="Ranking post failed. Check ranking channel settings and bot permissions.")
+        return JSONResponse({"ok": True, "message": "ランキングを手動投稿しました。"})
 
     @app.get("/api/ws-token")
     async def ws_token(request: Request) -> JSONResponse:
@@ -1313,6 +1594,37 @@ def create_app(container: AppContainer) -> FastAPI:
         notifications = await container.config_repo.list_notifications(profile.user_id, limit=safe_limit)
         unread_count = await container.config_repo.count_unread_notifications(profile.user_id)
         return JSONResponse({"notifications": notifications, "unread_count": unread_count})
+
+    @app.post("/api/notifications/read-all")
+    async def api_notifications_read_all(request: Request) -> JSONResponse:
+        profile = await _require_profile(request)
+        updated = await container.config_repo.mark_all_notifications_read(profile.user_id)
+        unread_count = await container.config_repo.count_unread_notifications(profile.user_id)
+        return JSONResponse({"ok": True, "updated": updated, "unread_count": unread_count})
+
+    @app.post("/api/notifications/{notification_id}/read")
+    async def api_notification_read(request: Request, notification_id: int) -> JSONResponse:
+        profile = await _require_profile(request)
+        updated = await container.config_repo.mark_notification_read(profile.user_id, notification_id)
+        if not updated:
+            raise HTTPException(status_code=404, detail="通知が見つかりません。")
+        unread_count = await container.config_repo.count_unread_notifications(profile.user_id)
+        return JSONResponse({"ok": True, "unread_count": unread_count})
+
+    @app.delete("/api/notifications/{notification_id}")
+    async def api_notification_delete(request: Request, notification_id: int) -> JSONResponse:
+        profile = await _require_profile(request)
+        deleted = await container.config_repo.delete_notification_for_user(profile.user_id, notification_id)
+        if not deleted:
+            raise HTTPException(status_code=404, detail="通知が見つかりません。")
+        unread_count = await container.config_repo.count_unread_notifications(profile.user_id)
+        return JSONResponse({"ok": True, "unread_count": unread_count})
+
+    @app.delete("/api/notifications")
+    async def api_notifications_delete_all(request: Request) -> JSONResponse:
+        await _require_admin(request, container)
+        deleted = await container.config_repo.delete_all_notifications()
+        return JSONResponse({"ok": True, "deleted": deleted, "unread_count": 0})
 
     async def _voice_state_payload(request: Request, guild_id: int, root_channel_id: int) -> JSONResponse:
         profile = await _require_profile(request)
@@ -1399,6 +1711,30 @@ def create_app(container: AppContainer) -> FastAPI:
             bitrate=safe_int(payload.get("bitrate")) if payload.get("bitrate") is not None else None,
         )
         return JSONResponse({"ok": True})
+
+    @app.post("/api/voice/{guild_id}/{root_channel_id}/access")
+    async def api_update_voice_access(request: Request, guild_id: int, root_channel_id: int) -> JSONResponse:
+        profile = await _require_profile(request)
+        guild_id, root_channel_id = normalize_ids(guild_id, root_channel_id)
+        session = await container.session_manager.get_or_restore_session(guild_id, root_channel_id)
+        if session is None:
+            raise HTTPException(status_code=404, detail="Session not found.")
+        if not await container.session_manager.can_edit_session(session, profile.user_id):
+            raise HTTPException(status_code=403, detail="Access control permission denied.")
+        payload = await request.json()
+        try:
+            message = await container.session_manager.update_access_control(
+                root_channel_id,
+                profile.user_id,
+                access_mode=str(payload.get("access_mode", "public")),
+                invited_user_ids=[str(item).strip() for item in _list_payload(payload.get("invited_user_ids")) if str(item).strip()],
+                access_role_ids=[str(item).strip() for item in _list_payload(payload.get("access_role_ids")) if str(item).strip()],
+            )
+        except PermissionError as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return JSONResponse({"ok": True, "message": message})
 
     @app.post("/api/voice/{guild_id}/{root_channel_id}/member-state")
     async def api_member_state(request: Request, guild_id: int, root_channel_id: int) -> JSONResponse:
