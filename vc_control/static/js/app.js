@@ -105,9 +105,6 @@
     if (params.get("saved") === "1" && window.VCToast) {
       window.VCToast.success("設定を保存しました。");
     }
-    if (params.get("setup") === "1" && window.VCToast) {
-      window.VCToast.success("初回セットアップを保存しました。再起動してからログインしてください。", "セットアップ完了");
-    }
     if (params.get("oauth_error") === "1" && window.VCToast) {
       window.VCToast.warning("OAuth設定に不足があります。Redirect URI を含めて確認してください。");
     }

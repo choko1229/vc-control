@@ -75,13 +75,13 @@
           <h2>アクセス可能なVCセッション</h2>
           <p>現在稼働しているセッションを一覧で開けます。</p>
         </div>
-        <span class="badge neutral">{{ sessions | length }}件</span>
+        <span class="badge neutral" data-realtime-session-count>{{ sessions | length }}件</span>
       </div>
 
       {% if sessions %}
-        <div class="flat-list">
+        <div class="compact-table">
           {% for session in sessions %}
-            <a class="flat-list-row clickable-row" href="/dashboard/voice/{{ session.guild_id }}/{{ session.root_channel_id }}">
+            <a class="compact-table-row clickable-row" href="/dashboard/voice/{{ session.guild_id }}/{{ session.root_channel_id }}">
               <div class="row-primary">
                 <span class="avatar avatar-sm">
                   {% if session.guild.icon_url %}

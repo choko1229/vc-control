@@ -36,7 +36,7 @@
             </span>
             <span class="sidebar-session-copy">
               <strong>{{ guild.name }}</strong>
-              <small>{{ guild.member_count }} members</small>
+              <small>{{ guild.member_count }}人</small>
             </span>
           </a>
         {% else %}
@@ -47,20 +47,18 @@
 
     <section class="sidebar-panel">
       <div class="sidebar-panel-title">設定カテゴリ</div>
-      <nav class="sidebar-nav">
-        <a class="sidebar-nav-link" href="#section-global">基本設定</a>
-        <a class="sidebar-nav-link" href="#section-vc">VC設定</a>
-        <a class="sidebar-nav-link" href="#section-team">チーム設定</a>
-        <a class="sidebar-nav-link" href="#section-notify">通知設定</a>
-        <a class="sidebar-nav-link" href="#section-ranking-post">ランキング投稿</a>
-        <a class="sidebar-nav-link" href="#section-permissions">権限チェック</a>
-        <a class="sidebar-nav-link" href="#section-logs">ログ</a>
+      <nav class="sidebar-nav" data-admin-tabs>
+        <button type="button" class="sidebar-nav-link" data-admin-tab="global">基本設定</button>
+        <button type="button" class="sidebar-nav-link" data-admin-tab="vc">VC設定</button>
+        <button type="button" class="sidebar-nav-link" data-admin-tab="team-notify">チーム・通知</button>
+        <button type="button" class="sidebar-nav-link" data-admin-tab="ranking">ランキング投稿</button>
+        <button type="button" class="sidebar-nav-link" data-admin-tab="diagnostics">診断・履歴</button>
       </nav>
     </section>
   </aside>
 
   <section class="page-main">
-    <section id="section-global" class="content-section">
+    <section id="section-global" class="content-section" data-tab-panel="global">
       <div class="section-header">
         <div>
           <h2>基本設定</h2>
@@ -172,8 +170,8 @@
           </div>
           <div class="setting-row">
             <div class="setting-copy">
-              <label>Timeline Retention Days</label>
-              <p>VC timeline events are kept for this many days.</p>
+              <label>タイムライン保持日数</label>
+              <p>VCのタイムラインイベントをこの日数だけ保持します。</p>
             </div>
             <div class="setting-control">
               <input type="number" name="timeline_retention_days" min="1" value="{{ settings.timeline_retention_days or '90' }}">
@@ -187,7 +185,7 @@
     </section>
 
     {% if selected_guild %}
-      <section id="section-vc" class="content-section">
+      <section id="section-vc" class="content-section" data-tab-panel="vc">
         <div class="section-header">
           <div>
             <h2>VC設定</h2>
@@ -261,40 +259,40 @@
             </div>
             <div class="setting-row">
               <div class="setting-copy">
-                <label>Solo VC cleanup</label>
-                <p>Auto-created personal VCs with only one non-bot member for a long time can receive invite suggestions.</p>
+                <label>ソロVCクリーンアップ</label>
+                <p>自動作成された個人VCに1人だけが長時間残っている場合の挙動です。</p>
               </div>
               <div class="setting-control">
-                <select name="solo_cleanup_mode">
-                  <option value="notify_only" {% if selected_config.solo_cleanup_mode == 'notify_only' %}selected{% endif %}>Notify only</option>
-                  <option value="delete_warning" {% if selected_config.solo_cleanup_mode == 'delete_warning' %}selected{% endif %}>Warn later</option>
-                  <option value="repeat_notice" {% if selected_config.solo_cleanup_mode == 'repeat_notice' %}selected{% endif %}>Repeat notice</option>
-                  <option value="disabled" {% if selected_config.solo_cleanup_mode == 'disabled' %}selected{% endif %}>Disabled</option>
+                <select name="solo_cleanup_mode" data-solo-mode-select>
+                  <option value="notify_only" {% if selected_config.solo_cleanup_mode == 'notify_only' %}selected{% endif %}>通知のみ</option>
+                  <option value="delete_warning" {% if selected_config.solo_cleanup_mode == 'delete_warning' %}selected{% endif %}>警告後に削除</option>
+                  <option value="repeat_notice" {% if selected_config.solo_cleanup_mode == 'repeat_notice' %}selected{% endif %}>繰り返し通知</option>
+                  <option value="disabled" {% if selected_config.solo_cleanup_mode == 'disabled' %}selected{% endif %}>無効</option>
                 </select>
               </div>
             </div>
             <div class="setting-row">
               <div class="setting-copy">
-                <label>Solo notice seconds</label>
-                <p>Default is 3600 seconds. The check starts when the personal VC has exactly one non-bot member.</p>
+                <label>最初の通知までの秒数</label>
+                <p>デフォルトは3600秒です。個人VCの在室者が1人になった時点から計測します。</p>
               </div>
               <div class="setting-control setting-control-inline">
                 <input type="number" min="60" name="solo_notice_after_sec" value="{{ selected_config.solo_notice_after_sec }}">
               </div>
             </div>
-            <div class="setting-row">
+            <div class="setting-row" data-solo-visible-for="delete_warning">
               <div class="setting-copy">
-                <label>Later warning seconds</label>
-                <p>Used when the mode is Warn later.</p>
+                <label>削除までの追加秒数</label>
+                <p>「警告後に削除」モードで使用します。警告後もこの秒数だけソロ状態が続くと自動削除されます。</p>
               </div>
               <div class="setting-control setting-control-inline">
                 <input type="number" min="60" name="solo_delete_warning_after_sec" value="{{ selected_config.solo_delete_warning_after_sec }}">
               </div>
             </div>
-            <div class="setting-row">
+            <div class="setting-row" data-solo-visible-for="repeat_notice">
               <div class="setting-copy">
-                <label>Repeat notice seconds</label>
-                <p>Used when the mode is Repeat notice.</p>
+                <label>繰り返し通知の間隔秒数</label>
+                <p>「繰り返し通知」モードで使用します。</p>
               </div>
               <div class="setting-control setting-control-inline">
                 <input type="number" min="300" name="solo_repeat_notice_sec" value="{{ selected_config.solo_repeat_notice_sec }}">
@@ -307,7 +305,7 @@
         </form>
       </section>
 
-      <section id="section-team" class="content-section">
+      <section id="section-team" class="content-section" data-tab-panel="team-notify">
         <div class="section-header">
           <div>
             <h2>チーム設定</h2>
@@ -350,7 +348,7 @@
         </form>
       </section>
 
-      <section id="section-notify" class="content-section">
+      <section id="section-notify" class="content-section" data-tab-panel="team-notify">
         <div class="section-header">
           <div>
             <h2>通知設定</h2>
@@ -385,40 +383,40 @@
         </form>
       </section>
 
-      <section id="section-ranking-post" class="content-section">
+      <section id="section-ranking-post" class="content-section" data-tab-panel="ranking">
         <div class="section-header">
           <div>
-            <h2>Activity ranking post</h2>
-            <p>Post multiple activity rankings in one Discord Embed.</p>
+            <h2>アクティビティランキング投稿</h2>
+            <p>複数のランキングを1つのDiscord Embedにまとめて投稿します。</p>
           </div>
         </div>
 
         <form class="flat-form-section" data-auto-save-form data-endpoint="/api/admin/guilds/{{ selected_guild_id }}/settings">
           <div class="form-section-header">
-            <strong>Discord Embed settings</strong>
-            <span class="save-status" data-save-status>Waiting</span>
+            <strong>Discord Embed設定</strong>
+            <span class="save-status" data-save-status>待機中</span>
           </div>
           <div class="setting-list">
             <div class="setting-row">
               <div class="setting-copy">
-                <label>Posting</label>
-                <p>Enable automatic ranking posts for this server.</p>
+                <label>自動投稿</label>
+                <p>このサーバーでランキングの自動投稿を有効にします。</p>
               </div>
               <div class="setting-control">
-                <label class="toggle-line">
+                <label class="checkbox-row">
                   <input type="checkbox" name="ranking_post_enabled" {% if selected_config.ranking_post_enabled %}checked{% endif %}>
-                  <span>Enabled</span>
+                  <span>有効</span>
                 </label>
               </div>
             </div>
             <div class="setting-row">
               <div class="setting-copy">
-                <label>Post channel</label>
-                <p>The text channel where the ranking Embed will be posted.</p>
+                <label>投稿先チャンネル</label>
+                <p>ランキングEmbedを投稿するテキストチャンネルです。</p>
               </div>
               <div class="setting-control">
                 <select name="ranking_post_channel_id">
-                  <option value="">Select channel</option>
+                  <option value="">チャンネルを選択</option>
                   {% for channel in channel_catalog.text_channels %}
                     <option value="{{ channel.id }}" {% if selected_config.ranking_post_channel_id|string == channel.id %}selected{% endif %}>{{ channel.icon }} {{ channel.name }}</option>
                   {% endfor %}
@@ -427,19 +425,19 @@
             </div>
             <div class="setting-row">
               <div class="setting-copy">
-                <label>Frequency</label>
-                <p>Multiple schedules can be enabled. Manual posting is always available.</p>
+                <label>投稿頻度</label>
+                <p>複数のスケジュールを有効にできます。手動投稿はいつでも可能です。</p>
               </div>
               <div class="setting-control weekday-grid">
-                {% for value, label in [("daily","Daily"),("weekly","Weekly"),("monthly","Monthly")] %}
+                {% for value, label in [("daily","毎日"),("weekly","毎週"),("monthly","毎月")] %}
                   <label><input type="checkbox" name="ranking_post_frequencies" value="{{ value }}" {% if value in selected_config.ranking_post_frequencies %}checked{% endif %}> {{ label }}</label>
                 {% endfor %}
               </div>
             </div>
             <div class="setting-row">
               <div class="setting-copy">
-                <label>Post time</label>
-                <p>Interpreted in Asia/Tokyo.</p>
+                <label>投稿時刻</label>
+                <p>Asia/Tokyo として解釈されます。</p>
               </div>
               <div class="setting-control setting-control-inline">
                 <input type="time" name="ranking_post_time" value="{{ selected_config.ranking_post_time }}">
@@ -447,42 +445,40 @@
             </div>
             <div class="setting-row">
               <div class="setting-copy">
-                <label>Ranking targets</label>
-                <p>All selected targets are combined into one Embed.</p>
+                <label>ランキング項目</label>
+                <p>選択した項目をまとめて1つのEmbedに表示します。</p>
               </div>
               <div class="setting-control weekday-grid">
-                {% for value, label in [("top_talkers","Today callers"),("top_hosts","VC hosts"),("team_splits","Team splits"),("night_owls","Night owls")] %}
+                {% for value, label in [("top_talkers","本日の通話時間"),("top_hosts","VC開催回数"),("team_splits","チーム分割回数"),("night_owls","深夜利用")] %}
                   <label><input type="checkbox" name="ranking_post_targets" value="{{ value }}" {% if value in selected_config.ranking_post_targets %}checked{% endif %}> {{ label }}</label>
                 {% endfor %}
               </div>
             </div>
           </div>
           <div class="form-actions">
-            <button type="submit" class="button button-primary">Save</button>
+            <button type="submit" class="button button-primary">保存</button>
           </div>
         </form>
 
-        <form method="post" action="/admin/guilds/{{ selected_guild_id }}/rankings/post" class="flat-form-section">
+        <div class="flat-form-section">
           <div class="form-section-header">
-            <strong>Manual post</strong>
+            <strong>手動投稿</strong>
           </div>
           <div class="form-actions">
-            <button type="submit" class="button button-secondary">Post ranking now</button>
+            <button type="button" class="button button-secondary" data-post-ranking-now data-guild-id="{{ selected_guild_id }}">今すぐランキングを投稿</button>
           </div>
-        </form>
+        </div>
       </section>
     {% else %}
-      <section class="content-section">
+      <section class="content-section" data-tab-panel="vc team-notify ranking">
         <div class="empty-panel">
           <strong>サーバーを選択してください</strong>
           <p>左のサーバー一覧から選ぶと設定画面が表示されます。</p>
         </div>
       </section>
     {% endif %}
-  </section>
 
-  <aside class="page-detail">
-    <section id="section-permissions" class="content-section">
+    <section id="section-permissions" class="content-section" data-tab-panel="diagnostics">
       <div class="section-header">
         <div>
           <h2>権限チェック</h2>
@@ -511,7 +507,7 @@
       </div>
     </section>
 
-    <section id="section-logs" class="content-section">
+    <section id="section-logs" class="content-section" data-tab-panel="diagnostics">
       <div class="section-header">
         <div>
           <h2>最近の履歴</h2>
@@ -563,6 +559,6 @@
         {% endfor %}
       </div>
     </section>
-  </aside>
+  </section>
 </div>
 {% endblock %}

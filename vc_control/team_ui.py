@@ -141,6 +141,9 @@ class AssignTeamSelect(discord.ui.Select):
         if not await self.manager.can_assign_others(session, member.id):
             await interaction.response.send_message("他ユーザーの割り当て権限がありません。", ephemeral=True)
             return
+        if not session.active_participants():
+            await interaction.response.send_message("割り当て可能な参加者がいません。", ephemeral=True)
+            return
         selected = None if self.values[0] == "__none__" else self.values[0]
         await interaction.response.send_message(
             "次に割り当て対象のユーザーを選んでください。",
@@ -160,8 +163,6 @@ class AssignUserSelect(discord.ui.Select):
             discord.SelectOption(label=participant.user_name, value=str(participant.user_id))
             for participant in session.active_participants()
         ]
-        if not options:
-            options = [discord.SelectOption(label="対象なし", value="0", default=True)]
         super().__init__(placeholder="割り当てるユーザーを選択", min_values=1, max_values=1, options=options)
         self.manager = manager
         self.root_channel_id = root_channel_id
@@ -169,9 +170,6 @@ class AssignUserSelect(discord.ui.Select):
 
     async def callback(self, interaction: discord.Interaction) -> None:
         member = cast(discord.Member, interaction.user)
-        if self.values[0] == "0":
-            await interaction.response.send_message("割り当て可能な参加者がいません。", ephemeral=True)
-            return
         try:
             message = await self.manager.assign_team(self.root_channel_id, member.id, int(self.values[0]), self.team_name)
         except (PermissionError, ValueError) as exc:
@@ -195,17 +193,12 @@ class RecallUserSelect(discord.ui.Select):
         for participant in session.active_participants():
             if participant.current_channel_id and participant.current_channel_id != root_channel_id_value:
                 options.append(discord.SelectOption(label=participant.user_name, value=str(participant.user_id)))
-        if not options:
-            options = [discord.SelectOption(label="対象なし", value="0", default=True)]
         super().__init__(placeholder="呼び戻すユーザーを選択", min_values=1, max_values=1, options=options)
         self.manager = manager
         self.root_channel_id = root_channel_id
 
     async def callback(self, interaction: discord.Interaction) -> None:
         member = cast(discord.Member, interaction.user)
-        if self.values[0] == "0":
-            await interaction.response.send_message("呼び戻せるユーザーがいません。", ephemeral=True)
-            return
         try:
             message = await self.manager.recall_member(self.root_channel_id, member.id, int(self.values[0]))
         except (PermissionError, ValueError) as exc:
@@ -224,19 +217,20 @@ class RecallUserView(discord.ui.View):
 
 class InviteUserSelect(discord.ui.UserSelect):
     def __init__(self, manager: SessionManager, root_channel_id: int) -> None:
-        super().__init__(placeholder="Invite users", min_values=1, max_values=10)
+        super().__init__(placeholder="招待するユーザーを選択", min_values=1, max_values=10)
         self.manager = manager
         self.root_channel_id = root_channel_id
 
     async def callback(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer(ephemeral=True)
         member = cast(discord.Member, interaction.user)
         user_ids = [str(user.id) for user in self.values]
         try:
             await self.manager.add_invited_users(self.root_channel_id, member.id, user_ids)
         except (PermissionError, ValueError) as exc:
-            await interaction.response.send_message(str(exc), ephemeral=True)
+            await interaction.followup.send(str(exc), ephemeral=True)
             return
-        await interaction.response.send_message("Invite users updated.", ephemeral=True)
+        await interaction.followup.send("招待ユーザーを更新しました。", ephemeral=True)
 
 
 class InviteUserView(discord.ui.View):
@@ -247,11 +241,12 @@ class InviteUserView(discord.ui.View):
 
 class AccessRoleSelect(discord.ui.RoleSelect):
     def __init__(self, manager: SessionManager, root_channel_id: int) -> None:
-        super().__init__(placeholder="Allowed roles", min_values=1, max_values=10)
+        super().__init__(placeholder="許可するロールを選択", min_values=1, max_values=10)
         self.manager = manager
         self.root_channel_id = root_channel_id
 
     async def callback(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer(ephemeral=True)
         member = cast(discord.Member, interaction.user)
         role_ids = [str(role.id) for role in self.values]
         try:
@@ -262,94 +257,15 @@ class AccessRoleSelect(discord.ui.RoleSelect):
                 access_role_ids=role_ids,
             )
         except (PermissionError, ValueError) as exc:
-            await interaction.response.send_message(str(exc), ephemeral=True)
+            await interaction.followup.send(str(exc), ephemeral=True)
             return
-        await interaction.response.send_message("Role access updated.", ephemeral=True)
+        await interaction.followup.send("ロールによるアクセス設定を更新しました。", ephemeral=True)
 
 
 class AccessRoleView(discord.ui.View):
     def __init__(self, manager: SessionManager, root_channel_id: int) -> None:
         super().__init__(timeout=180)
         self.add_item(AccessRoleSelect(manager, root_channel_id))
-
-
-class MainSessionControlView(discord.ui.View):
-    def __init__(self, manager: SessionManager, root_channel_id: int, management_url: str | None = None) -> None:
-        super().__init__(timeout=None)
-        self.manager = manager
-        self.root_channel_id = root_channel_id
-        if management_url:
-            self.add_item(discord.ui.Button(label="VCを管理", style=discord.ButtonStyle.link, url=management_url))
-
-    @discord.ui.button(label="集合", style=discord.ButtonStyle.success)
-    async def collect(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        member = cast(discord.Member, interaction.user)
-        try:
-            moved = await self.manager.assemble_teams(self.root_channel_id, member.id)
-        except (PermissionError, ValueError) as exc:
-            await interaction.response.send_message(str(exc), ephemeral=True)
-            return
-        await interaction.response.send_message(f"集合を実行しました。対象 {len(moved)} 人。", ephemeral=True)
-
-    @discord.ui.button(label="呼び戻し", style=discord.ButtonStyle.primary)
-    async def recall(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        session = self.manager.get_session_by_root(self.root_channel_id)
-        if session is None:
-            await interaction.response.send_message("セッションが見つかりません。", ephemeral=True)
-            return
-        await interaction.response.send_message(
-            "呼び戻すユーザーを選択してください。",
-            ephemeral=True,
-            view=RecallUserView(self.manager, self.root_channel_id, session),
-        )
-
-    @discord.ui.button(label="Access: Public", style=discord.ButtonStyle.secondary)
-    async def panel_access_public(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        member = cast(discord.Member, interaction.user)
-        try:
-            await self.manager.update_access_control(self.root_channel_id, member.id, access_mode="public")
-        except (PermissionError, ValueError) as exc:
-            await interaction.response.send_message(str(exc), ephemeral=True)
-            return
-        await interaction.response.send_message("VC access set to public.", ephemeral=True)
-
-    @discord.ui.button(label="Access: Invite", style=discord.ButtonStyle.secondary)
-    async def panel_access_invite(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        member = cast(discord.Member, interaction.user)
-        try:
-            await self.manager.update_access_control(self.root_channel_id, member.id, access_mode="invite")
-        except (PermissionError, ValueError) as exc:
-            await interaction.response.send_message(str(exc), ephemeral=True)
-            return
-        await interaction.response.send_message("Select users to invite.", ephemeral=True, view=InviteUserView(self.manager, self.root_channel_id))
-
-    @discord.ui.button(label="Access: Roles", style=discord.ButtonStyle.secondary)
-    async def panel_access_roles(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        await interaction.response.send_message("Select allowed roles.", ephemeral=True, view=AccessRoleView(self.manager, self.root_channel_id))
-
-    @discord.ui.button(label="Public", style=discord.ButtonStyle.secondary)
-    async def access_public(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        member = cast(discord.Member, interaction.user)
-        try:
-            await self.manager.update_access_control(self.root_channel_id, member.id, access_mode="public")
-        except (PermissionError, ValueError) as exc:
-            await interaction.response.send_message(str(exc), ephemeral=True)
-            return
-        await interaction.response.send_message("VC access set to public.", ephemeral=True)
-
-    @discord.ui.button(label="Invite", style=discord.ButtonStyle.secondary)
-    async def access_invite(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        member = cast(discord.Member, interaction.user)
-        try:
-            await self.manager.update_access_control(self.root_channel_id, member.id, access_mode="invite")
-        except (PermissionError, ValueError) as exc:
-            await interaction.response.send_message(str(exc), ephemeral=True)
-            return
-        await interaction.response.send_message("Select users to invite.", ephemeral=True, view=InviteUserView(self.manager, self.root_channel_id))
-
-    @discord.ui.button(label="Roles", style=discord.ButtonStyle.secondary)
-    async def access_roles(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        await interaction.response.send_message("Select allowed roles.", ephemeral=True, view=AccessRoleView(self.manager, self.root_channel_id))
 
 
 class TeamPanelView(discord.ui.View):
@@ -359,9 +275,9 @@ class TeamPanelView(discord.ui.View):
         self.root_channel_id = root_channel_id
         self.management_url = management_url
         if management_url:
-            self.add_item(discord.ui.Button(label="VCを管理", style=discord.ButtonStyle.link, url=management_url))
+            self.add_item(discord.ui.Button(label="VCを管理", style=discord.ButtonStyle.link, url=management_url, row=0))
 
-    @discord.ui.button(label="自分のチーム", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(label="自分のチーム", style=discord.ButtonStyle.secondary, row=0)
     async def my_team(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         session = self.manager.get_session_by_root(self.root_channel_id)
         if session is None:
@@ -373,7 +289,7 @@ class TeamPanelView(discord.ui.View):
             view=SelfTeamView(self.manager, self.root_channel_id, session),
         )
 
-    @discord.ui.button(label="他メンバー割当", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(label="他メンバー割当", style=discord.ButtonStyle.secondary, row=0)
     async def assign_other(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         member = cast(discord.Member, interaction.user)
         session = self.manager.get_session_by_root(self.root_channel_id)
@@ -389,7 +305,7 @@ class TeamPanelView(discord.ui.View):
             view=AssignTeamView(self.manager, self.root_channel_id, session),
         )
 
-    @discord.ui.button(label="チーム設定", style=discord.ButtonStyle.primary)
+    @discord.ui.button(label="チーム設定", style=discord.ButtonStyle.primary, row=0)
     async def settings(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         member = cast(discord.Member, interaction.user)
         session = self.manager.get_session_by_root(self.root_channel_id)
@@ -401,7 +317,7 @@ class TeamPanelView(discord.ui.View):
             return
         await interaction.response.send_modal(TeamSettingsModal(self.manager, self.root_channel_id, session))
 
-    @discord.ui.button(label="分割", style=discord.ButtonStyle.success)
+    @discord.ui.button(label="分割", style=discord.ButtonStyle.success, row=1)
     async def split(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         member = cast(discord.Member, interaction.user)
         try:
@@ -410,25 +326,8 @@ class TeamPanelView(discord.ui.View):
             await interaction.response.send_message(str(exc), ephemeral=True)
             return
         await interaction.response.send_message(f"分割を実行しました。対象チーム数: {len(result)}", ephemeral=True)
-        target_channel = self.manager.resolve_voice_channel(self.root_channel_id) or interaction.channel
-        session = self.manager.get_session_by_root(self.root_channel_id)
-        management_url = None
-        if session is not None:
-            management_url = await self.manager.build_management_url(session.guild_id, session.root_channel_id)
-        if target_channel and result:
-            description = "\n".join(result)
-            if management_url:
-                description = f"{description}\n\nVC管理: {management_url}"
-            await target_channel.send(
-                embed=discord.Embed(
-                    title="チーム分割操作",
-                    description=description,
-                    color=discord.Color.blue(),
-                ),
-                view=MainSessionControlView(self.manager, self.root_channel_id, management_url=management_url),
-            )
 
-    @discord.ui.button(label="集合", style=discord.ButtonStyle.success)
+    @discord.ui.button(label="集合", style=discord.ButtonStyle.success, row=1)
     async def assemble(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         member = cast(discord.Member, interaction.user)
         try:
@@ -438,14 +337,49 @@ class TeamPanelView(discord.ui.View):
             return
         await interaction.response.send_message(f"集合を実行しました。対象 {len(moved)} 人。", ephemeral=True)
 
-    @discord.ui.button(label="呼び戻し", style=discord.ButtonStyle.primary)
+    @discord.ui.button(label="呼び戻し", style=discord.ButtonStyle.primary, row=1)
     async def recall(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         session = self.manager.get_session_by_root(self.root_channel_id)
         if session is None:
             await interaction.response.send_message("セッションが見つかりません。", ephemeral=True)
+            return
+        recallable = [
+            participant
+            for participant in session.active_participants()
+            if participant.current_channel_id and participant.current_channel_id != session.root_channel_id
+        ]
+        if not recallable:
+            await interaction.response.send_message("呼び戻せるユーザーがいません。", ephemeral=True)
             return
         await interaction.response.send_message(
             "呼び戻すユーザーを選んでください。",
             ephemeral=True,
             view=RecallUserView(self.manager, self.root_channel_id, session),
         )
+
+    @discord.ui.button(label="Access: Public", style=discord.ButtonStyle.secondary, row=2)
+    async def access_public(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await interaction.response.defer(ephemeral=True)
+        member = cast(discord.Member, interaction.user)
+        try:
+            await self.manager.update_access_control(self.root_channel_id, member.id, access_mode="public")
+        except (PermissionError, ValueError) as exc:
+            await interaction.followup.send(str(exc), ephemeral=True)
+            return
+        await interaction.followup.send("VCのアクセスを公開に設定しました。", ephemeral=True)
+
+    @discord.ui.button(label="Access: Invite", style=discord.ButtonStyle.secondary, row=2)
+    async def access_invite(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await interaction.response.defer(ephemeral=True)
+        member = cast(discord.Member, interaction.user)
+        try:
+            await self.manager.update_access_control(self.root_channel_id, member.id, access_mode="invite")
+        except (PermissionError, ValueError) as exc:
+            await interaction.followup.send(str(exc), ephemeral=True)
+            return
+        await interaction.followup.send("招待するユーザーを選択してください。", ephemeral=True, view=InviteUserView(self.manager, self.root_channel_id))
+
+    @discord.ui.button(label="Access: Roles", style=discord.ButtonStyle.secondary, row=2)
+    async def access_roles(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await interaction.response.defer(ephemeral=True)
+        await interaction.followup.send("許可するロールを選択してください。", ephemeral=True, view=AccessRoleView(self.manager, self.root_channel_id))

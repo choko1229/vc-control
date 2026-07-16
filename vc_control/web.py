@@ -958,7 +958,7 @@ def create_app(container: AppContainer) -> FastAPI:
             dashboard_host=str(form.get("dashboard_host", _default_dashboard_host())).strip(),
             dashboard_port=safe_int(form.get("dashboard_port"), _default_dashboard_port()),
         )
-        if not expected_password or payload.setup_password != expected_password:
+        if not expected_password or not hmac.compare_digest(payload.setup_password, expected_password):
             raise HTTPException(status_code=403, detail="セットアップパスワードが正しくありません。")
         await container.config_repo.save_initial_setup(payload, secrets.token_urlsafe(32))
         return RedirectResponse("/login?setup=1", status_code=302)
@@ -1231,7 +1231,7 @@ def create_app(container: AppContainer) -> FastAPI:
             raise HTTPException(status_code=404, detail="Reservation not found.")
         if not await container.session_manager.is_guild_admin(scheduled.guild_id, profile.user_id):
             raise HTTPException(status_code=403, detail="Server administrator permission is required.")
-        await container.config_repo.delete_scheduled_vc(scheduled_id)
+        await container.session_manager.cancel_scheduled_vc(scheduled)
         return RedirectResponse(f"/dashboard/reservations?guild_id={scheduled.guild_id}&deleted=1", status_code=302)
 
     @app.get("/dashboard/voice/{guild_id}/{root_channel_id}", response_class=HTMLResponse, response_model=None)

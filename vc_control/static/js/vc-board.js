@@ -9,6 +9,7 @@
     timerId: null,
     timelineEvents: [],
     mobileMenuUserId: null,
+    splitConfirmTimeout: null,
     touch: {
       longPressTimerId: null,
       pointerId: null,
@@ -278,8 +279,8 @@
           <div class="member-row-actions">
             <button type="button" class="inline-button primary" data-member-action="select" data-user-id="${participant.user_id}">移動</button>
             <button type="button" class="inline-button ${canRecall ? "" : "danger"}" data-member-action="recall" data-user-id="${participant.user_id}" ${canRecall ? "" : "disabled"}>戻す</button>
-            <button type="button" class="inline-button" data-member-action="mute" data-user-id="${participant.user_id}" ${state.session.can_edit ? "" : "disabled"}>ミュート</button>
-            <button type="button" class="inline-button" data-member-action="deafen" data-user-id="${participant.user_id}" ${state.session.can_edit ? "" : "disabled"}>デフェン</button>
+            <button type="button" class="inline-button ${participant.server_muted ? "primary" : ""}" data-member-action="mute" data-user-id="${participant.user_id}" ${state.session.can_edit ? "" : "disabled"}>${participant.server_muted ? "ミュート解除" : "ミュート"}</button>
+            <button type="button" class="inline-button ${participant.server_deafened ? "primary" : ""}" data-member-action="deafen" data-user-id="${participant.user_id}" ${state.session.can_edit ? "" : "disabled"}>${participant.server_deafened ? "デフェン解除" : "デフェン"}</button>
           </div>
         </div>
       </article>
@@ -638,6 +639,24 @@
     await refreshSession();
   }
 
+  function setSplitButtonsArmed(armed) {
+    document.querySelectorAll("[data-action='split']").forEach((button) => {
+      if (armed) {
+        if (!button.dataset.originalHtml) {
+          button.dataset.originalHtml = button.innerHTML;
+        }
+        button.classList.add("is-armed");
+        const target = button.querySelector("span") || button;
+        target.textContent = "もう一度で実行";
+      } else {
+        button.classList.remove("is-armed");
+        if (button.dataset.originalHtml) {
+          button.innerHTML = button.dataset.originalHtml;
+        }
+      }
+    });
+  }
+
   async function executeSplit() {
     const { guildId, rootChannelId } = rootIds();
     if (pendingChangeCount(state.session)) {
@@ -820,12 +839,16 @@
           } else if (action === "recall") {
             await executeRecall(userId);
           } else if (action === "mute") {
-            await updateServerState(userId, { mute: true });
-            window.VCToast?.success("サーバーミュートを設定しました。");
+            const participant = state.session.activeParticipants.find((item) => sameId(item.user_id, userId));
+            const nextMute = !(participant && participant.server_muted);
+            await updateServerState(userId, { mute: nextMute });
+            window.VCToast?.success(nextMute ? "サーバーミュートを設定しました。" : "サーバーミュートを解除しました。");
             await refreshSession();
           } else if (action === "deafen") {
-            await updateServerState(userId, { deafen: true });
-            window.VCToast?.success("サーバーデフェンを設定しました。");
+            const participant = state.session.activeParticipants.find((item) => sameId(item.user_id, userId));
+            const nextDeafen = !(participant && participant.server_deafened);
+            await updateServerState(userId, { deafen: nextDeafen });
+            window.VCToast?.success(nextDeafen ? "サーバーデフェンを設定しました。" : "サーバーデフェンを解除しました。");
             await refreshSession();
           }
         } catch (error) {
@@ -834,10 +857,22 @@
       }
 
       if (event.target.closest("[data-action='split']")) {
-        try {
-          await executeSplit();
-        } catch (error) {
-          window.VCToast?.error(error.message || "分割に失敗しました。");
+        if (state.splitConfirmTimeout) {
+          window.clearTimeout(state.splitConfirmTimeout);
+          state.splitConfirmTimeout = null;
+          setSplitButtonsArmed(false);
+          try {
+            await executeSplit();
+          } catch (error) {
+            window.VCToast?.error(error.message || "分割に失敗しました。");
+          }
+        } else {
+          setSplitButtonsArmed(true);
+          window.VCToast?.warning("実際にユーザーを移動します。もう一度クリックすると分割を実行します。");
+          state.splitConfirmTimeout = window.setTimeout(() => {
+            state.splitConfirmTimeout = null;
+            setSplitButtonsArmed(false);
+          }, 4000);
         }
       }
 

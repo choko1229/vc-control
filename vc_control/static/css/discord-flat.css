@@ -501,7 +501,6 @@ code {
 .setting-list,
 .team-group-list,
 .voice-member-list,
-.flat-list,
 .option-list {
   display: grid;
   gap: 8px;
@@ -524,6 +523,15 @@ code {
   border-radius: var(--radius-sm);
   color: var(--text-secondary);
   transition: background-color var(--transition-fast), color var(--transition-fast), transform var(--transition-fast);
+}
+
+button.sidebar-nav-link {
+  width: 100%;
+  border: none;
+  background: none;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
 }
 
 .sidebar-nav-link:hover,
@@ -613,7 +621,6 @@ code {
   font-size: 12px;
 }
 
-.flat-list-row,
 .clickable-row {
   display: flex;
   align-items: center;
@@ -1088,6 +1095,13 @@ code {
   color: #fff;
 }
 
+.button.is-armed,
+.mobile-vc-action.is-armed {
+  background: var(--warning);
+  border-color: var(--warning);
+  color: #1f2328;
+}
+
 .flat-form-section,
 .detail-card {
   padding: 12px;
@@ -1397,7 +1411,6 @@ textarea:focus {
 .sidebar-guild-row,
 .sidebar-session-row,
 .channel-list-row,
-.flat-list-row,
 .compact-table-row,
 .member-row,
 .team-group,
@@ -1415,7 +1428,6 @@ textarea:focus {
 .sidebar-guild-row:hover,
 .sidebar-session-row:hover,
 .channel-list-row:hover,
-.flat-list-row:hover,
 .compact-table-row:hover,
 .member-row:hover,
 .team-group:hover,
@@ -1497,10 +1509,18 @@ textarea:focus {
   .page-shell,
   .page-shell-voice {
     grid-template-columns: 248px minmax(0, 1fr);
+    height: auto;
+    overflow: visible;
+  }
+
+  .page-sidebar,
+  .page-main,
+  .page-detail {
+    overflow: visible;
   }
 
   .page-detail {
-    display: none;
+    grid-column: 1 / -1;
   }
 }
 
@@ -1690,7 +1710,6 @@ textarea:focus {
   .compact-table-row,
   .member-row,
   .top-rank-row,
-  .flat-list-row,
   .timeline-item,
   .timeline-filter-bar {
     align-items: flex-start;

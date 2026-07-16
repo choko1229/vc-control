@@ -91,9 +91,9 @@
         </div>
       {% endif %}
 
-      {% if top_rankings or other_rankings %}
+      {% if other_rankings %}
         <div class="compact-table ranking-table">
-          {% for row in top_rankings + other_rankings %}
+          {% for row in other_rankings %}
             <div class="compact-table-row">
               <div class="row-rank">{{ row.rank }}</div>
               <div class="row-primary">

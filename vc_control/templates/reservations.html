@@ -1,15 +1,15 @@
 {% extends "base.html" %}
 {% set page_name = "reservations" %}
 
-{% block header_eyebrow %}VC Reservation{% endblock %}
+{% block header_eyebrow %}VC予約管理{% endblock %}
 {% block header_title %}VC予約{% endblock %}
 {% block header_subtitle %}指定時刻にVCを作成し、通知と終了時刻の自動削除を行います。{% endblock %}
 
 {% block content %}
 <div class="page-shell">
   <aside class="page-sidebar">
-    <div class="sidebar-section">
-      <span class="sidebar-label">Servers</span>
+    <section class="sidebar-panel">
+      <div class="sidebar-panel-title">対象サーバー</div>
       <nav class="sidebar-nav">
         {% for guild in guilds %}
           <a class="sidebar-guild-row {% if selected_guild_id|string == guild.id|string %}is-active{% endif %}" href="/dashboard/reservations?guild_id={{ guild.id }}">
@@ -24,16 +24,16 @@
           </a>
         {% endfor %}
       </nav>
-    </div>
+    </section>
   </aside>
 
-  <main class="page-content">
+  <main class="page-main">
     {% if selected_guild_id %}
       <section class="content-section">
         <div class="section-header">
           <div>
-            <h2>Create VC now</h2>
-            <p>Create a personal VC or temporary event VC in the managed category.</p>
+            <h2>今すぐVCを作成</h2>
+            <p>管理対象カテゴリ内に個人VCまたは一時イベントVCを作成します。</p>
           </div>
         </div>
 
@@ -43,25 +43,25 @@
             <div class="setting-list">
               <div class="setting-row">
                 <div class="setting-copy">
-                  <label>VC type</label>
-                  <p>Team VCs cannot be created from the web dashboard.</p>
+                  <label>VC種別</label>
+                  <p>チームVCはWebダッシュボードから作成できません。</p>
                 </div>
                 <div class="setting-control">
                   <select name="vc_type">
-                    <option value="personal">Personal VC</option>
-                    <option value="event">Temporary event VC</option>
+                    <option value="personal">個人VC</option>
+                    <option value="event">一時イベントVC</option>
                   </select>
                 </div>
               </div>
 
               <div class="setting-row">
                 <div class="setting-copy">
-                  <label>Personal VC owner</label>
-                  <p>Used only for personal VC creation.</p>
+                  <label>個人VCの所有者</label>
+                  <p>個人VC作成時のみ使用します。</p>
                 </div>
                 <div class="setting-control">
                   <select name="owner_user_id">
-                    <option value="">Select user</option>
+                    <option value="">ユーザーを選択</option>
                     {% for member in member_catalog %}
                       <option value="{{ member.id }}">{{ member.name }} / {{ member.id }}</option>
                     {% endfor %}
@@ -71,29 +71,29 @@
 
               <div class="setting-row">
                 <div class="setting-copy">
-                  <label>VC name</label>
-                  <p>Personal VC can leave this empty to use the owner display name.</p>
+                  <label>VC名</label>
+                  <p>個人VCの場合、空欄なら所有者の表示名が使われます。</p>
                 </div>
                 <div class="setting-control">
-                  <input type="text" name="vc_name" placeholder="Optional for personal VC">
+                  <input type="text" name="vc_name" placeholder="個人VCの場合は空欄可">
                 </div>
               </div>
 
               <div class="setting-row">
                 <div class="setting-copy">
-                  <label>Capacity / bitrate</label>
-                  <p>Created under the configured managed category.</p>
+                  <label>人数上限 / ビットレート</label>
+                  <p>設定済みの管理対象カテゴリ内に作成されます。</p>
                 </div>
                 <div class="setting-control setting-control-inline">
-                  <input type="number" min="0" max="99" name="user_limit" placeholder="Limit">
-                  <input type="number" min="8000" name="bitrate" placeholder="Bitrate">
+                  <input type="number" min="0" max="99" name="user_limit" placeholder="上限">
+                  <input type="number" min="8000" name="bitrate" placeholder="ビットレート">
                 </div>
               </div>
 
               <div class="setting-row">
                 <div class="setting-copy">
-                  <label>Event end time</label>
-                  <p>Required only for temporary event VC. The VC is deleted automatically.</p>
+                  <label>イベント終了時刻</label>
+                  <p>一時イベントVCの場合のみ必須です。終了時刻でVCは自動削除されます。</p>
                 </div>
                 <div class="setting-control">
                   <input type="datetime-local" name="end_at">
@@ -102,23 +102,23 @@
 
               <div class="setting-row">
                 <div class="setting-copy">
-                  <label>Description</label>
-                  <p>Shown in creation notifications.</p>
+                  <label>説明</label>
+                  <p>作成通知に表示されます。</p>
                 </div>
                 <div class="setting-control">
-                  <textarea name="description" rows="3" placeholder="Optional note"></textarea>
+                  <textarea name="description" rows="3" placeholder="任意のメモ"></textarea>
                 </div>
               </div>
             </div>
 
             <div class="form-actions">
-              <button type="submit" class="button button-primary">Create VC now</button>
+              <button type="submit" class="button button-primary">今すぐVCを作成</button>
             </div>
           </form>
         {% else %}
-          <div class="empty-state">
-            <strong>Managed category is not configured</strong>
-            <p>Set the managed category in server settings before creating VCs from the web dashboard.</p>
+          <div class="empty-panel">
+            <strong>管理対象カテゴリが未設定です</strong>
+            <p>Webダッシュボードから作成する前に、サーバー設定で管理対象カテゴリを設定してください。</p>
           </div>
         {% endif %}
       </section>
@@ -126,8 +126,8 @@
       <section class="content-section">
         <div class="section-header">
           <div>
-            <h2>New reservation</h2>
-            <p>Server administrators can create scheduled voice channels.</p>
+            <h2>新規予約</h2>
+            <p>サーバー管理者は予約VCを作成できます。</p>
           </div>
         </div>
 
@@ -136,22 +136,22 @@
           <div class="setting-list">
             <div class="setting-row">
               <div class="setting-copy">
-                <label>VC name</label>
-                <p>The voice channel name that will be created at start time.</p>
+                <label>VC名</label>
+                <p>開始時刻に作成されるボイスチャンネル名です。</p>
               </div>
               <div class="setting-control">
-                <input type="text" name="vc_name" required placeholder="Event VC">
+                <input type="text" name="vc_name" required placeholder="イベントVC">
               </div>
             </div>
 
             <div class="setting-row">
               <div class="setting-copy">
-                <label>Category</label>
-                <p>Select the Discord category for the scheduled VC.</p>
+                <label>カテゴリ</label>
+                <p>予約VCを作成するDiscordカテゴリを選択します。</p>
               </div>
               <div class="setting-control">
                 <select name="category_id">
-                  <option value="">No category</option>
+                  <option value="">カテゴリなし</option>
                   {% for channel in channel_catalog.categories %}
                     <option value="{{ channel.id }}">{{ channel.icon }} {{ channel.name }}</option>
                   {% endfor %}
@@ -161,29 +161,29 @@
 
             <div class="setting-row">
               <div class="setting-copy">
-                <label>Capacity / bitrate</label>
-                <p>Leave bitrate empty to use Discord defaults.</p>
+                <label>人数上限 / ビットレート</label>
+                <p>ビットレートを空欄にするとDiscordの初期値が使われます。</p>
               </div>
               <div class="setting-control setting-control-inline">
-                <input type="number" min="0" max="99" name="user_limit" placeholder="Limit">
-                <input type="number" min="8000" name="bitrate" placeholder="Bitrate">
+                <input type="number" min="0" max="99" name="user_limit" placeholder="上限">
+                <input type="number" min="8000" name="bitrate" placeholder="ビットレート">
               </div>
             </div>
 
             <div class="setting-row">
               <div class="setting-copy">
-                <label>Description</label>
-                <p>Shown in the notification channel and DMs.</p>
+                <label>説明</label>
+                <p>通知チャンネルとDMに表示されます。</p>
               </div>
               <div class="setting-control">
-                <textarea name="description" rows="3" placeholder="Agenda or notes"></textarea>
+                <textarea name="description" rows="3" placeholder="議題やメモ"></textarea>
               </div>
             </div>
 
             <div class="setting-row">
               <div class="setting-copy">
-                <label>Start / end</label>
-                <p>End time is optional. If set, the VC is deleted automatically.</p>
+                <label>開始 / 終了</label>
+                <p>終了時刻は任意です。設定すると自動削除されます。</p>
               </div>
               <div class="setting-control setting-control-inline">
                 <input type="datetime-local" name="start_at" required>
@@ -193,19 +193,19 @@
 
             <div class="setting-row">
               <div class="setting-copy">
-                <label>Repeat</label>
-                <p>Daily, weekly, monthly, or selected weekdays.</p>
+                <label>繰り返し</label>
+                <p>毎日・毎週・毎月、または曜日指定です。</p>
               </div>
               <div class="setting-control">
                 <select name="repeat_mode">
-                  <option value="none">None</option>
-                  <option value="daily">Daily</option>
-                  <option value="weekly">Weekly</option>
-                  <option value="monthly">Monthly</option>
-                  <option value="weekdays">Selected weekdays</option>
+                  <option value="none">なし</option>
+                  <option value="daily">毎日</option>
+                  <option value="weekly">毎週</option>
+                  <option value="monthly">毎月</option>
+                  <option value="weekdays">曜日指定</option>
                 </select>
                 <div class="weekday-grid">
-                  {% for value, label in [(0,"Mon"),(1,"Tue"),(2,"Wed"),(3,"Thu"),(4,"Fri"),(5,"Sat"),(6,"Sun")] %}
+                  {% for value, label in [(0,"月"),(1,"火"),(2,"水"),(3,"木"),(4,"金"),(5,"土"),(6,"日")] %}
                     <label><input type="checkbox" name="repeat_weekdays" value="{{ value }}"> {{ label }}</label>
                   {% endfor %}
                 </div>
@@ -214,14 +214,14 @@
 
             <div class="setting-row">
               <div class="setting-copy">
-                <label>Mention</label>
-                <p>For user or role mentions, enter Discord IDs separated by commas.</p>
+                <label>メンション</label>
+                <p>ユーザー・ロールメンションの場合、Discord IDをカンマ区切りで入力します。</p>
               </div>
               <div class="setting-control">
                 <select name="mention_type">
-                  <option value="none">None</option>
-                  <option value="user">Users</option>
-                  <option value="role">Roles</option>
+                  <option value="none">なし</option>
+                  <option value="user">ユーザー</option>
+                  <option value="role">ロール</option>
                   <option value="everyone">@everyone</option>
                   <option value="here">@here</option>
                 </select>
@@ -231,7 +231,7 @@
           </div>
 
           <div class="form-actions">
-            <button type="submit" class="button button-primary">Create reservation</button>
+            <button type="submit" class="button button-primary">予約を作成</button>
           </div>
         </form>
       </section>
@@ -239,39 +239,41 @@
       <section class="content-section">
         <div class="section-header">
           <div>
-            <h2>Reservations</h2>
-            <p>Pending, active, and completed scheduled VCs.</p>
+            <h2>予約一覧</h2>
+            <p>未発火・稼働中・完了済みの予約VCです。</p>
           </div>
         </div>
 
         <div class="compact-table">
+          {% set status_labels = {'pending': '未発火', 'active': '稼働中', 'completed': '完了'} %}
+          {% set repeat_labels = {'none': 'なし', 'daily': '毎日', 'weekly': '毎週', 'monthly': '毎月', 'weekdays': '曜日指定'} %}
           {% for item in schedules %}
             <div class="compact-table-row">
               <div>
                 <strong>{{ item.vc_name }}</strong>
-                <span>{{ item.status }} / {{ item.repeat_mode }}</span>
+                <span>{{ status_labels.get(item.status, item.status) }} / {{ repeat_labels.get(item.repeat_mode, item.repeat_mode) }}</span>
               </div>
               <div>
                 <strong>{{ format_datetime_input(item.start_at) }}</strong>
-                <span>{% if item.end_at %}End {{ format_datetime_input(item.end_at) }}{% else %}No end{% endif %}</span>
+                <span>{% if item.end_at %}終了 {{ format_datetime_input(item.end_at) }}{% else %}終了未設定{% endif %}</span>
               </div>
               <form method="post" action="/dashboard/reservations/{{ item.id }}/delete">
-                <button type="submit" class="button button-ghost">Delete</button>
+                <button type="submit" class="button button-secondary">削除</button>
               </form>
             </div>
           {% else %}
-            <div class="empty-state">
-              <strong>No reservations</strong>
-              <p>Create the first scheduled VC for this server.</p>
+            <div class="empty-panel">
+              <strong>予約はありません</strong>
+              <p>このサーバー用に最初の予約VCを作成してください。</p>
             </div>
           {% endfor %}
         </div>
       </section>
     {% else %}
       <section class="content-section">
-        <div class="empty-state">
-          <strong>No manageable servers</strong>
-          <p>You need server administrator permission to create VC reservations.</p>
+        <div class="empty-panel">
+          <strong>管理可能なサーバーがありません</strong>
+          <p>VC予約を作成するにはサーバー管理者権限が必要です。</p>
         </div>
       </section>
     {% endif %}

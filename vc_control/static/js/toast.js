@@ -21,10 +21,17 @@
     const duration = Number(options.duration || 3600);
 
     toast.className = `toast ${tone}`;
-    toast.innerHTML = `
-      <div class="toast-title">${title}</div>
-      <div class="toast-message">${message}</div>
-    `;
+
+    const titleEl = document.createElement("div");
+    titleEl.className = "toast-title";
+    titleEl.textContent = title;
+
+    const messageEl = document.createElement("div");
+    messageEl.className = "toast-message";
+    messageEl.textContent = message;
+
+    toast.appendChild(titleEl);
+    toast.appendChild(messageEl);
 
     root.appendChild(toast);
 
