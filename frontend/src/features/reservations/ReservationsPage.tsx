@@ -18,7 +18,15 @@ import {
   useReservationsList,
 } from './useReservations'
 
-const WEEKDAY_KEYS = ['月', '火', '水', '木', '金', '土', '日']
+const WEEKDAY_KEYS = [
+  'reservations.weekdayMon',
+  'reservations.weekdayTue',
+  'reservations.weekdayWed',
+  'reservations.weekdayThu',
+  'reservations.weekdayFri',
+  'reservations.weekdaySat',
+  'reservations.weekdaySun',
+]
 
 export function ReservationsPage() {
   const { t } = useTranslation()
@@ -227,7 +235,7 @@ export function ReservationsPage() {
             </Select>
             {repeatMode === 'weekdays' ? (
               <div className="mt-2 flex flex-wrap gap-2">
-                {WEEKDAY_KEYS.map((label, index) => (
+                {WEEKDAY_KEYS.map((labelKey, index) => (
                   <label key={index} className="flex items-center gap-1 text-xs text-text-secondary">
                     <input
                       type="checkbox"
@@ -238,7 +246,7 @@ export function ReservationsPage() {
                         )
                       }
                     />
-                    {label}
+                    {t(labelKey)}
                   </label>
                 ))}
               </div>

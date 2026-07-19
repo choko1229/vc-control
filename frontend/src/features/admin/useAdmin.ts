@@ -36,8 +36,7 @@ export interface GuildConfigData {
 
 export interface Diagnostic {
   level: string
-  title: string
-  message: string
+  code: string
 }
 
 export interface ErrorLogRow {

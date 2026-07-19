@@ -42,15 +42,15 @@ export function SetupPage() {
       <Card className="w-full max-w-lg">
         <h1 className="font-heading text-xl font-bold text-text-primary">{t('auth.setupTitle')}</h1>
         <form className="mt-4 space-y-4" onSubmit={handleSubmit}>
-          <LabeledInput name="setup_password" label="Setup password" type="password" required />
-          <LabeledInput name="bot_token" label="Bot Token" type="password" required />
-          <LabeledInput name="client_id" label="Discord Client ID" required />
-          <LabeledInput name="client_secret" label="Discord Client Secret" type="password" required />
-          <LabeledInput name="redirect_uri" label="Redirect URI" type="url" required />
-          <LabeledInput name="base_url" label="Dashboard Base URL" type="url" required />
-          <LabeledInput name="owner_user_id" label="Bot Owner Discord User ID" required />
-          <LabeledInput name="dashboard_host" label="Dashboard Host" defaultValue="0.0.0.0" required />
-          <LabeledInput name="dashboard_port" label="Dashboard Port" type="number" defaultValue="49162" required />
+          <LabeledInput name="setup_password" label={t('auth.setupPassword')} type="password" required />
+          <LabeledInput name="bot_token" label={t('auth.setupBotToken')} type="password" required />
+          <LabeledInput name="client_id" label={t('auth.setupClientId')} required />
+          <LabeledInput name="client_secret" label={t('auth.setupClientSecret')} type="password" required />
+          <LabeledInput name="redirect_uri" label={t('auth.setupRedirectUri')} type="url" required />
+          <LabeledInput name="base_url" label={t('auth.setupBaseUrl')} type="url" required />
+          <LabeledInput name="owner_user_id" label={t('auth.setupOwnerUserId')} required />
+          <LabeledInput name="dashboard_host" label={t('auth.setupDashboardHost')} defaultValue="0.0.0.0" required />
+          <LabeledInput name="dashboard_port" label={t('auth.setupDashboardPort')} type="number" defaultValue="49162" required />
           <Button type="submit" loading={submitting} className="w-full">
             {t('common.save')}
           </Button>

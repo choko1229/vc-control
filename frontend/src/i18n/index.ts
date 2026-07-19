@@ -6,6 +6,10 @@ import en from './locales/en.json'
 
 const LANGUAGE_STORAGE_KEY = 'vc-control-language'
 
+i18n.on('languageChanged', (lng) => {
+  document.documentElement.lang = lng
+})
+
 void i18n
   .use(LanguageDetector)
   .use(initReactI18next)
@@ -23,9 +27,8 @@ void i18n
       caches: ['localStorage'],
     },
   })
-
-i18n.on('languageChanged', (lng) => {
-  document.documentElement.lang = lng
-})
+  .then(() => {
+    document.documentElement.lang = i18n.resolvedLanguage ?? 'ja'
+  })
 
 export default i18n

@@ -26,6 +26,18 @@
           document.documentElement.dataset.theme = 'dark';
         }
       })();
+      (function () {
+        var supported = ['ja', 'en'];
+        try {
+          var stored = localStorage.getItem('vc-control-language');
+          var lang = stored && supported.indexOf(stored) !== -1
+            ? stored
+            : (supported.indexOf(navigator.language.slice(0, 2)) !== -1 ? navigator.language.slice(0, 2) : 'ja');
+          document.documentElement.lang = lang;
+        } catch (error) {
+          document.documentElement.lang = 'ja';
+        }
+      })();
     </script>
   </head>
   <body>

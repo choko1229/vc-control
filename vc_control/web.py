@@ -370,21 +370,21 @@ def _build_guild_diagnostics(container: AppContainer, guild_id: int, config: Gui
     diagnostics: list[dict[str, str]] = []
     guild = _resolve_guild(container, guild_id)
     if config is None:
-        diagnostics.append({"level": "warning", "title": "設定未作成", "message": "このサーバーの設定はまだ保存されていません。"})
+        diagnostics.append({"level": "warning", "code": "no_config"})
         return diagnostics
     if config.base_voice_channel_id is None:
-        diagnostics.append({"level": "warning", "title": "基点VC未選択", "message": "基点VCが未選択です。個人VCの自動作成は動作しません。"})
+        diagnostics.append({"level": "warning", "code": "no_base_channel"})
     if config.managed_category_id is None:
-        diagnostics.append({"level": "warning", "title": "管理カテゴリ未選択", "message": "管理対象カテゴリが未選択です。作成先カテゴリを設定してください。"})
+        diagnostics.append({"level": "warning", "code": "no_managed_category"})
     if config.notification_channel_id is None:
-        diagnostics.append({"level": "warning", "title": "通知チャンネル未選択", "message": "通知チャンネルが未選択です。フォールバック通知や管理通知に影響します。"})
+        diagnostics.append({"level": "warning", "code": "no_notification_channel"})
     if guild is None or container.bot is None or container.bot.user is None:
-        diagnostics.append({"level": "warning", "title": "Bot未接続", "message": "Bot が未接続のため、権限チェックは一部確認できません。"})
+        diagnostics.append({"level": "warning", "code": "bot_disconnected"})
         return diagnostics
 
     bot_member = guild.get_member(container.bot.user.id)
     if bot_member is None:
-        diagnostics.append({"level": "danger", "title": "Botメンバー不在", "message": "このサーバー内で Bot メンバーを解決できません。"})
+        diagnostics.append({"level": "danger", "code": "bot_member_missing"})
         return diagnostics
 
     if config.managed_category_id is not None:
@@ -392,20 +392,20 @@ def _build_guild_diagnostics(container: AppContainer, guild_id: int, config: Gui
         if isinstance(category, discord.CategoryChannel):
             perms = category.permissions_for(bot_member)
             if not perms.manage_channels:
-                diagnostics.append({"level": "danger", "title": "VC作成権限不足", "message": "管理カテゴリで `Manage Channels` 権限がありません。"})
+                diagnostics.append({"level": "danger", "code": "missing_manage_channels"})
         else:
-            diagnostics.append({"level": "warning", "title": "管理カテゴリ不明", "message": "選択中の管理カテゴリが存在しません。"})
+            diagnostics.append({"level": "warning", "code": "category_not_found"})
 
     if config.notification_channel_id is not None:
         notification_channel = guild.get_channel(config.notification_channel_id)
         if isinstance(notification_channel, discord.TextChannel):
             perms = notification_channel.permissions_for(bot_member)
             if not perms.send_messages:
-                diagnostics.append({"level": "danger", "title": "送信権限不足", "message": "通知チャンネルでメッセージ送信権限がありません。"})
+                diagnostics.append({"level": "danger", "code": "missing_send_messages"})
             if not perms.embed_links:
-                diagnostics.append({"level": "warning", "title": "Embed権限不足", "message": "通知チャンネルで Embed Links 権限がありません。"})
+                diagnostics.append({"level": "warning", "code": "missing_embed_links"})
         else:
-            diagnostics.append({"level": "warning", "title": "通知チャンネル不明", "message": "選択中の通知チャンネルが存在しません。"})
+            diagnostics.append({"level": "warning", "code": "notification_channel_not_found"})
 
     move_check_channel = None
     if config.base_voice_channel_id is not None:
@@ -413,14 +413,14 @@ def _build_guild_diagnostics(container: AppContainer, guild_id: int, config: Gui
         if isinstance(channel, discord.VoiceChannel):
             move_check_channel = channel
         else:
-            diagnostics.append({"level": "warning", "title": "基点VC不明", "message": "選択中の基点VCが存在しません。"})
+            diagnostics.append({"level": "warning", "code": "base_channel_not_found"})
     if move_check_channel is not None:
         perms = move_check_channel.permissions_for(bot_member)
         if not perms.move_members:
-            diagnostics.append({"level": "danger", "title": "メンバー移動権限不足", "message": "基点VCで Move Members 権限がありません。"})
+            diagnostics.append({"level": "danger", "code": "missing_move_members"})
 
     if not diagnostics:
-        diagnostics.append({"level": "success", "title": "設定チェックOK", "message": "主要な選択項目と権限は確認できています。"})
+        diagnostics.append({"level": "success", "code": "all_ok"})
     return diagnostics
 
 

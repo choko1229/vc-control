@@ -34,8 +34,8 @@ export function DiagnosticsTab({ guildId }: { guildId: string }) {
               <div key={index} className="flex items-start gap-3 rounded-icon bg-surface-sunken px-4 py-3">
                 <Badge tone={LEVEL_TONE[item.level] ?? 'neutral'}>{item.level}</Badge>
                 <div>
-                  <p className="text-sm font-bold text-text-primary">{item.title}</p>
-                  <p className="text-xs text-text-secondary">{item.message}</p>
+                  <p className="text-sm font-bold text-text-primary">{t(`admin.diag_${item.code}_title`)}</p>
+                  <p className="text-xs text-text-secondary">{t(`admin.diag_${item.code}_message`)}</p>
                 </div>
               </div>
             ))}
