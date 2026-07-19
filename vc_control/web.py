@@ -496,29 +496,6 @@ def _decorate_timeline_events(rows: list[dict[str, Any]]) -> list[dict[str, Any]
     return result
 
 
-def _build_session_card(container: AppContainer, session_payload: dict[str, Any]) -> dict[str, Any]:
-    guild_id = safe_int(session_payload.get("guild_id"))
-    guild_name = str(session_payload.get("guild_name") or guild_id)
-    guild = _resolve_guild(container, guild_id)
-    started_at = from_iso(str(session_payload.get("started_at") or "")) or utcnow()
-    active_count = safe_int(session_payload.get("active_participant_count"))
-    owner = _serialize_user_identity(
-        container,
-        guild_id,
-        safe_int(session_payload.get("owner_user_id")),
-        str(session_payload.get("owner_user_name") or "Unknown"),
-    )
-    return {
-        **session_payload,
-        "guild": _serialize_guild_identity(guild, guild_id, guild_name),
-        "owner": owner,
-        "participant_count": active_count,
-        "elapsed_label": format_duration(max(0, int((utcnow() - started_at).total_seconds()))),
-        "status_label": "進行中" if active_count else "待機中",
-        "status_tone": "success" if active_count else "muted",
-    }
-
-
 def _build_session_ui_payload(container: AppContainer, session: dict[str, Any] | Any) -> dict[str, Any]:
     payload = session if isinstance(session, dict) else session.to_payload()
     guild_id = safe_int(payload.get("guild_id"))
@@ -1064,28 +1041,6 @@ def create_app(container: AppContainer) -> FastAPI:
         request.session.clear()
         return RedirectResponse("/login", status_code=302)
 
-    @app.get("/dashboard/me", response_class=HTMLResponse, response_model=None)
-    async def dashboard_me(request: Request) -> Response:
-        profile = await _require_profile(request)
-        settings = await _fetch_runtime_settings(container)
-        is_admin = _owner_user_id(settings) == profile.user_id
-        sessions = await container.session_manager.list_accessible_sessions(profile.user_id)
-        session_cards = [_build_session_card(container, session) for session in sessions]
-        summary = await container.stats_repo.get_user_period_summary(profile.user_id, "all")
-        guild_breakdown = _decorate_guild_rows(await container.stats_repo.get_user_guild_breakdown(profile.user_id, "all"), container)
-        return render(
-            request,
-            "dashboard.html",
-            {
-                "title": "マイダッシュボード",
-                "sessions": session_cards,
-                "summary": summary,
-                "guild_breakdown": guild_breakdown,
-                "is_admin": is_admin,
-                "format_duration": format_duration,
-            },
-        )
-
     @app.get("/dashboard/settings", response_class=HTMLResponse, response_model=None)
     async def user_settings(request: Request) -> Response:
         await _require_profile(request)
@@ -1217,66 +1172,6 @@ def create_app(container: AppContainer) -> FastAPI:
             raise HTTPException(status_code=403, detail="Server administrator permission is required.")
         await container.session_manager.cancel_scheduled_vc(scheduled)
         return RedirectResponse(f"/dashboard/reservations?guild_id={scheduled.guild_id}&deleted=1", status_code=302)
-
-    @app.get("/dashboard/voice/{guild_id}/{root_channel_id}", response_class=HTMLResponse, response_model=None)
-    async def voice_dashboard(request: Request, guild_id: int, root_channel_id: int) -> Response:
-        profile = await _require_profile(request)
-        state = await _resolve_voice_dashboard_state(container, guild_id, root_channel_id)
-        session = state["session"]
-        container.logger.info(
-            "[VC管理ページ] guild_id=%s vc_id=%s active_keys=%s channel=%s non_bot_members=%s session_found=%s restored=%s",
-            safe_int(guild_id),
-            safe_int(root_channel_id),
-            container.session_manager.get_active_session_keys(),
-            state["channel"].name if state["channel"] else None,
-            len(state["non_bot_members"]),
-            bool(session),
-            bool(state.get("restored")),
-        )
-        channel = state["channel"]
-        non_bot_members = state["non_bot_members"]
-
-        if session is None and not non_bot_members:
-            raise HTTPException(status_code=404, detail="このVCには現在アクティブなセッションがありません。")
-
-        if session is not None:
-            if not await container.session_manager.can_view_session(session, profile.user_id):
-                raise HTTPException(status_code=403, detail="閲覧権限がありません。")
-            can_edit = await container.session_manager.can_edit_session(session, profile.user_id)
-            can_assign_others = await container.session_manager.can_assign_others(session, profile.user_id)
-        else:
-            member_ids = {member.id for member in non_bot_members}
-            if profile.user_id not in member_ids and not await container.session_manager.is_guild_admin(guild_id, profile.user_id):
-                raise HTTPException(status_code=403, detail="閲覧権限がありません。")
-            can_edit = await container.session_manager.is_guild_admin(guild_id, profile.user_id)
-            can_assign_others = False
-
-        session_view = state["session_view"]
-        session_view["can_edit"] = can_edit
-        session_view["can_assign_others"] = can_assign_others
-        return render(
-            request,
-            "voice.html",
-            {
-                "title": "VC管理",
-                "page_name": "voice",
-                "guild_id": guild_id,
-                "root_channel_id": root_channel_id,
-                "session": session_view,
-                "guild": state["guild"],
-                "channel": channel,
-                "participants": state["participants"],
-                "teams": state["teams"],
-                "unassigned_members": state["unassigned_members"],
-                "member_catalog": _serialize_guild_members(container, guild_id),
-                "role_catalog": _serialize_guild_roles(container, guild_id),
-                "can_edit": can_edit,
-                "can_assign_others": can_assign_others,
-                "can_manage": can_edit,
-                "management_url": state["management_url"],
-                "format_duration": format_duration,
-            },
-        )
 
     @app.get("/dashboard/stats/me", response_class=HTMLResponse, response_model=None)
     async def my_stats(request: Request, period: str = "all", guild_id: int | None = None) -> Response:
@@ -1582,6 +1477,54 @@ def create_app(container: AppContainer) -> FastAPI:
             }
         )
 
+    @app.get("/api/dashboard/me")
+    async def api_dashboard_me(request: Request) -> JSONResponse:
+        profile = await _require_profile(request)
+        settings = await _fetch_runtime_settings(container)
+        is_admin = _owner_user_id(settings) == profile.user_id
+        sessions = await container.session_manager.list_accessible_sessions(profile.user_id)
+        session_rows = []
+        for session_payload in sessions:
+            guild_id = safe_int(session_payload.get("guild_id"))
+            guild = _resolve_guild(container, guild_id)
+            guild_name = str(session_payload.get("guild_name") or guild_id)
+            session_rows.append(
+                {
+                    "sessionId": session_payload.get("session_id"),
+                    "guild": _serialize_guild_identity(guild, guild_id, guild_name),
+                    "rootChannelId": str(session_payload.get("root_channel_id")),
+                    "rootChannelName": session_payload.get("root_channel_name"),
+                    "startedAt": session_payload.get("started_at"),
+                    "activeParticipantCount": safe_int(session_payload.get("active_participant_count")),
+                    "canEdit": bool(session_payload.get("can_edit")),
+                }
+            )
+        summary = await container.stats_repo.get_user_period_summary(profile.user_id, "all")
+        breakdown_rows = await container.stats_repo.get_user_guild_breakdown(profile.user_id, "all")
+        guild_breakdown = []
+        for row in breakdown_rows:
+            guild_id = safe_int(row.get("guild_id"))
+            guild = _resolve_guild(container, guild_id)
+            guild_name = str(row.get("guild_name") or guild_id)
+            guild_breakdown.append(
+                {
+                    "guild": _serialize_guild_identity(guild, guild_id, guild_name),
+                    "talkSeconds": safe_int(row.get("talk_seconds")),
+                    "afkSeconds": safe_int(row.get("afk_seconds")),
+                }
+            )
+        return JSONResponse(
+            {
+                "isAdmin": is_admin,
+                "sessions": session_rows,
+                "summary": {
+                    "talkSeconds": safe_int(summary.get("talk_seconds")),
+                    "afkSeconds": safe_int(summary.get("afk_seconds")),
+                },
+                "guildBreakdown": guild_breakdown,
+            }
+        )
+
     @app.get("/api/ws-token")
     async def ws_token(request: Request) -> JSONResponse:
         profile = await _require_profile(request)
@@ -1626,6 +1569,34 @@ def create_app(container: AppContainer) -> FastAPI:
         deleted = await container.config_repo.delete_all_notifications()
         return JSONResponse({"ok": True, "deleted": deleted, "unread_count": 0})
 
+    _CHANNEL_KIND_CODES = {"カテゴリ": "category", "ボイス": "voice", "テキスト": "text"}
+
+    @app.get("/api/guilds/{guild_id}/channels")
+    async def api_guild_channels(request: Request, guild_id: int) -> JSONResponse:
+        profile = await _require_profile(request)
+        if not await container.session_manager.is_guild_admin(guild_id, profile.user_id):
+            raise HTTPException(status_code=403, detail="サーバー管理者権限が必要です。")
+        catalog = _serialize_guild_channels(container, guild_id)
+        reshaped = {
+            key: [{"id": entry["id"], "name": entry["name"], "kind": _CHANNEL_KIND_CODES.get(entry["kind"], entry["kind"])} for entry in entries]
+            for key, entries in catalog.items()
+        }
+        return JSONResponse(reshaped)
+
+    @app.get("/api/guilds/{guild_id}/members")
+    async def api_guild_members(request: Request, guild_id: int) -> JSONResponse:
+        profile = await _require_profile(request)
+        if not await container.session_manager.is_guild_admin(guild_id, profile.user_id):
+            raise HTTPException(status_code=403, detail="サーバー管理者権限が必要です。")
+        return JSONResponse({"members": _serialize_guild_members(container, guild_id)})
+
+    @app.get("/api/guilds/{guild_id}/roles")
+    async def api_guild_roles(request: Request, guild_id: int) -> JSONResponse:
+        profile = await _require_profile(request)
+        if not await container.session_manager.is_guild_admin(guild_id, profile.user_id):
+            raise HTTPException(status_code=403, detail="サーバー管理者権限が必要です。")
+        return JSONResponse({"roles": _serialize_guild_roles(container, guild_id)})
+
     async def _voice_state_payload(request: Request, guild_id: int, root_channel_id: int) -> JSONResponse:
         profile = await _require_profile(request)
         state = await _resolve_voice_dashboard_state(container, guild_id, root_channel_id)
@@ -1661,10 +1632,6 @@ def create_app(container: AppContainer) -> FastAPI:
 
     @app.get("/api/voice/{guild_id}/{root_channel_id}")
     async def session_payload(request: Request, guild_id: int, root_channel_id: int) -> JSONResponse:
-        return await _voice_state_payload(request, guild_id, root_channel_id)
-
-    @app.get("/api/voice/{guild_id}/{root_channel_id}/state")
-    async def session_state_payload(request: Request, guild_id: int, root_channel_id: int) -> JSONResponse:
         return await _voice_state_payload(request, guild_id, root_channel_id)
 
     @app.get("/api/voice/{guild_id}/{root_channel_id}/timeline")

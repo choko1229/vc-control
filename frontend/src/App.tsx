@@ -4,6 +4,7 @@ import { SetupPage } from './features/auth/SetupPage'
 import { ErrorPage } from './features/auth/ErrorPage'
 import { AppLayout } from './features/layout/AppLayout'
 import { DashboardPage } from './features/dashboard/DashboardPage'
+import { VoiceBoardPage } from './features/voiceBoard/VoiceBoardPage'
 
 export function App() {
   return (
@@ -13,6 +14,7 @@ export function App() {
       <Route path="/error" element={<ErrorPage />} />
       <Route element={<AppLayout />}>
         <Route path="/dashboard/me" element={<DashboardPage />} />
+        <Route path="/dashboard/voice/:guildId/:channelId" element={<VoiceBoardPage />} />
       </Route>
       <Route path="/" element={<Navigate to="/dashboard/me" replace />} />
       <Route path="*" element={<Navigate to="/dashboard/me" replace />} />
