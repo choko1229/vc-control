@@ -5,6 +5,7 @@ import hashlib
 import hmac
 import os
 import secrets
+from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -21,7 +22,7 @@ from starlette.templating import Jinja2Templates
 
 from vc_control.bootstrap import AppContainer
 from vc_control.models import GuildConfig, OAuthProfile, ScheduledVC, SetupPayload
-from vc_control.utils import format_duration, from_iso, make_session_key, normalize_ids, safe_int, utcnow
+from vc_control.utils import format_duration, from_iso, make_session_key, normalize_ids, safe_int, to_iso, utcnow
 
 
 LOCAL_TZ = ZoneInfo("Asia/Tokyo")
@@ -243,6 +244,26 @@ def _serialize_guild_roles(container: AppContainer, guild_id: int) -> list[dict[
     return roles
 
 
+def _serialize_scheduled_vc(scheduled: ScheduledVC) -> dict[str, Any]:
+    return {
+        "id": scheduled.id,
+        "guildId": str(scheduled.guild_id),
+        "vcName": scheduled.vc_name,
+        "categoryId": str(scheduled.category_id) if scheduled.category_id is not None else None,
+        "userLimit": scheduled.user_limit,
+        "bitrate": scheduled.bitrate,
+        "mentionType": scheduled.mention_type,
+        "mentionTargets": scheduled.mention_targets,
+        "description": scheduled.description,
+        "startAt": to_iso(scheduled.start_at),
+        "endAt": to_iso(scheduled.end_at),
+        "repeatMode": scheduled.repeat_mode,
+        "repeatWeekdays": scheduled.repeat_weekdays,
+        "status": scheduled.status,
+        "createdChannelId": str(scheduled.created_channel_id) if scheduled.created_channel_id is not None else None,
+    }
+
+
 def _decorate_guild_rows(rows: list[dict[str, Any]], container: AppContainer) -> list[dict[str, Any]]:
     result: list[dict[str, Any]] = []
     for row in rows:
@@ -334,12 +355,6 @@ def _parse_datetime_local(value: Any) -> datetime | None:
     if parsed.tzinfo is None:
         return parsed.replace(tzinfo=LOCAL_TZ).astimezone(UTC)
     return parsed.astimezone(UTC)
-
-
-def _format_datetime_input(value: datetime | None) -> str:
-    if value is None:
-        return ""
-    return value.astimezone(LOCAL_TZ).strftime("%Y-%m-%dT%H:%M")
 
 
 async def _admin_guilds_for_profile(container: AppContainer, profile: OAuthProfile) -> list[dict[str, Any]]:
@@ -753,6 +768,13 @@ async def _fetch_runtime_settings(container: AppContainer) -> dict[str, str]:
     return await container.config_repo.get_runtime_settings()
 
 
+def _redact_runtime_settings(settings: dict[str, str]) -> dict[str, Any]:
+    redacted = {key: value for key, value in settings.items() if key not in {"bot_token", "client_secret", "session_secret"}}
+    redacted["has_bot_token"] = bool(settings.get("bot_token"))
+    redacted["has_client_secret"] = bool(settings.get("client_secret"))
+    return redacted
+
+
 def _owner_user_id(settings: dict[str, str]) -> int:
     return safe_int(settings.get("owner_user_id"))
 
@@ -1041,315 +1063,87 @@ def create_app(container: AppContainer) -> FastAPI:
         request.session.clear()
         return RedirectResponse("/login", status_code=302)
 
-    @app.get("/dashboard/settings", response_class=HTMLResponse, response_model=None)
-    async def user_settings(request: Request) -> Response:
-        await _require_profile(request)
-        return render(
-            request,
-            "user_settings.html",
-            {
-                "title": "ユーザー設定",
-            },
-        )
+    _GUILD_CONFIG_FIELDS = (
+        "managed_category_id",
+        "base_voice_channel_id",
+        "notification_channel_id",
+        "first_empty_notice_sec",
+        "final_delete_sec",
+        "solo_cleanup_mode",
+        "solo_notice_after_sec",
+        "solo_delete_warning_after_sec",
+        "solo_repeat_notice_sec",
+        "ranking_post_enabled",
+        "ranking_post_channel_id",
+        "ranking_post_frequencies",
+        "ranking_post_time",
+        "ranking_post_targets",
+        "team_mode",
+        "team_names",
+        "enabled",
+    )
 
-    @app.get("/dashboard/reservations", response_class=HTMLResponse, response_model=None)
-    async def reservations_page(request: Request, guild_id: int | None = None) -> Response:
-        profile = await _require_profile(request)
-        guilds = await _admin_guilds_for_profile(container, profile)
-        selected_guild_id = guild_id or (safe_int(guilds[0]["id"]) if guilds else 0)
-        if selected_guild_id and not await container.session_manager.is_guild_admin(selected_guild_id, profile.user_id):
-            raise HTTPException(status_code=403, detail="Server administrator permission is required.")
-        selected_guild = _resolve_guild(container, selected_guild_id) if selected_guild_id else None
-        channel_catalog = _serialize_guild_channels(container, selected_guild_id) if selected_guild_id else {"categories": [], "voice_channels": [], "text_channels": []}
-        selected_config = await container.config_repo.get_guild_config(selected_guild_id) if selected_guild_id else None
-        member_catalog = _serialize_guild_members(container, selected_guild_id) if selected_guild_id else []
-        schedules = await container.config_repo.list_scheduled_vcs(selected_guild_id or None)
-        return render(
-            request,
-            "reservations.html",
-            {
-                "title": "VC予約",
-                "page_name": "reservations",
-                "guild_id": str(selected_guild_id) if selected_guild_id else "",
-                "guilds": guilds,
-                "selected_guild_id": selected_guild_id,
-                "selected_guild": selected_guild,
-                "selected_config": selected_config,
-                "channel_catalog": channel_catalog,
-                "member_catalog": member_catalog,
-                "schedules": schedules,
-                "format_datetime_input": _format_datetime_input,
-            },
-        )
-
-    @app.post("/dashboard/voice/create", response_model=None)
-    async def create_web_voice_channel(request: Request) -> Response:
-        profile = await _require_profile(request)
-        form = await request.form()
-        guild_id = safe_int(form.get("guild_id"))
-        if not await container.session_manager.is_guild_admin(guild_id, profile.user_id):
-            raise HTTPException(status_code=403, detail="Server administrator permission is required.")
-        vc_type = str(form.get("vc_type", "personal")).strip()
-        end_at = _parse_datetime_local(form.get("end_at"))
-        if vc_type == "event" and end_at is None:
-            raise HTTPException(status_code=400, detail="Temporary event VC requires end time.")
-        try:
-            channel = await container.session_manager.create_web_voice_channel(
-                guild_id=guild_id,
-                actor_id=profile.user_id,
-                actor_name=profile.display_name,
-                vc_type=vc_type,
-                owner_user_id=safe_int(form.get("owner_user_id")) or None,
-                vc_name=str(form.get("vc_name", "")).strip() or None,
-                user_limit=safe_int(form.get("user_limit"), 0),
-                bitrate=safe_int(form.get("bitrate")) or None,
-                end_at=end_at,
-                description=str(form.get("description", "")).strip(),
-            )
-        except PermissionError as exc:
-            raise HTTPException(status_code=403, detail=str(exc)) from exc
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-        except RuntimeError as exc:
-            raise HTTPException(status_code=502, detail=str(exc)) from exc
-        return RedirectResponse(f"/dashboard/voice/{guild_id}/{channel.id}", status_code=302)
-
-    @app.post("/dashboard/reservations", response_model=None)
-    async def create_reservation(request: Request) -> Response:
-        profile = await _require_profile(request)
-        form = await request.form()
-        guild_id = safe_int(form.get("guild_id"))
-        if not await container.session_manager.is_guild_admin(guild_id, profile.user_id):
-            raise HTTPException(status_code=403, detail="Server administrator permission is required.")
-        guild = _resolve_guild(container, guild_id)
-        if guild is None:
-            raise HTTPException(status_code=404, detail="Guild is not available.")
-        start_at = _parse_datetime_local(form.get("start_at"))
-        if start_at is None:
-            raise HTTPException(status_code=400, detail="Start time is required.")
-        end_at = _parse_datetime_local(form.get("end_at"))
-        if end_at is not None and end_at <= start_at:
-            raise HTTPException(status_code=400, detail="End time must be later than start time.")
-        repeat_weekdays = [safe_int(item, -1) for item in form.getlist("repeat_weekdays")]
-        repeat_weekdays = [item for item in repeat_weekdays if 0 <= item <= 6]
-        mention_targets = [
-            chunk.strip()
-            for chunk in str(form.get("mention_targets", "")).replace("\n", ",").split(",")
-            if chunk.strip()
-        ]
-        mention_type = str(form.get("mention_type", "none")).strip()
-        if mention_type not in {"none", "user", "role", "everyone", "here"}:
-            mention_type = "none"
-        scheduled = ScheduledVC(
-            id=None,
-            guild_id=guild.id,
-            guild_name=guild.name,
-            creator_user_id=profile.user_id,
-            creator_user_name=profile.display_name,
-            vc_name=str(form.get("vc_name", "")).strip() or "Scheduled VC",
-            category_id=safe_int(form.get("category_id")) or None,
-            user_limit=max(0, min(99, safe_int(form.get("user_limit"), 0))),
-            bitrate=safe_int(form.get("bitrate")) or None,
-            mention_type=mention_type,
-            mention_targets=mention_targets,
-            description=str(form.get("description", "")).strip(),
-            start_at=start_at,
-            end_at=end_at,
-            repeat_mode=_normalize_repeat_mode(form.get("repeat_mode")),
-            repeat_weekdays=repeat_weekdays,
-        )
-        await container.config_repo.create_scheduled_vc(scheduled)
-        return RedirectResponse(f"/dashboard/reservations?guild_id={guild.id}&saved=1", status_code=302)
-
-    @app.post("/dashboard/reservations/{scheduled_id}/delete", response_model=None)
-    async def delete_reservation(request: Request, scheduled_id: int) -> Response:
-        profile = await _require_profile(request)
-        schedules = await container.config_repo.list_scheduled_vcs(limit=1000)
-        scheduled = next((item for item in schedules if item.id == scheduled_id), None)
-        if scheduled is None:
-            raise HTTPException(status_code=404, detail="Reservation not found.")
-        if not await container.session_manager.is_guild_admin(scheduled.guild_id, profile.user_id):
-            raise HTTPException(status_code=403, detail="Server administrator permission is required.")
-        await container.session_manager.cancel_scheduled_vc(scheduled)
-        return RedirectResponse(f"/dashboard/reservations?guild_id={scheduled.guild_id}&deleted=1", status_code=302)
-
-    @app.get("/dashboard/stats/me", response_class=HTMLResponse, response_model=None)
-    async def my_stats(request: Request, period: str = "all", guild_id: int | None = None) -> Response:
-        profile = await _require_profile(request)
-        summary = await container.stats_repo.get_user_period_summary(profile.user_id, period)
-        breakdown = _decorate_guild_rows(await container.stats_repo.get_user_guild_breakdown(profile.user_id, period), container)
-        known_guilds = _decorate_guild_rows(await container.stats_repo.get_known_guilds_for_user(profile.user_id), container)
-        daily_chart = await container.stats_repo.get_user_daily_chart(profile.user_id, guild_id)
-        hourly_heatmap = await container.stats_repo.get_user_hourly_heatmap(profile.user_id, guild_id)
-        daily_chart_rows = _build_daily_chart_rows(daily_chart)
-        talk_ratio = _build_talk_ratio(summary)
-        hourly_heatmap_slots = _build_hourly_heatmap_slots(hourly_heatmap)
-        return render(
-            request,
-            "stats_me.html",
-            {
-                "title": "自分の通話時間",
-                "period": period,
-                "selected_guild_id": guild_id,
-                "summary": summary,
-                "breakdown": breakdown,
-                "known_guilds": known_guilds,
-                "daily_chart_rows": daily_chart_rows,
-                "talk_ratio": talk_ratio,
-                "hourly_heatmap_slots": hourly_heatmap_slots,
-                "format_duration": format_duration,
-            },
-        )
-
-    @app.get("/dashboard/rankings", response_class=HTMLResponse, response_model=None)
-    async def rankings(request: Request, period: str = "all", guild_id: int | None = None) -> Response:
-        profile = await _require_profile(request)
-        rankings_data = await container.stats_repo.get_rankings(period=period, guild_id=guild_id, limit=100)
-        known_guilds = _decorate_guild_rows(await container.stats_repo.get_known_guilds_for_user(profile.user_id), container)
-        top_rankings, other_rankings = _build_rankings_view(rankings_data, container)
-        return render(
-            request,
-            "rankings.html",
-            {
-                "title": "ランキング",
-                "period": period,
-                "selected_guild_id": guild_id,
-                "top_rankings": top_rankings,
-                "other_rankings": other_rankings,
-                "known_guilds": known_guilds,
-                "format_duration": format_duration,
-            },
-        )
-
-    @app.get("/dashboard/sessions/{session_id}", response_class=HTMLResponse, response_model=None)
-    async def session_detail(request: Request, session_id: str, user_id: str | None = None, event_type: str | None = None, date_from: str | None = None, date_to: str | None = None) -> Response:
-        profile = await _require_profile(request)
-        completed = await container.stats_repo.get_completed_session(session_id)
-        if completed is None:
-            raise HTTPException(status_code=404, detail="セッションが見つかりません。")
-        guild_id = safe_int(completed.get("guild_id"))
-        is_admin = await container.session_manager.is_guild_admin(guild_id, profile.user_id)
-        member_ids = {safe_int(item.get("user_id")) for item in await container.stats_repo.list_timeline_events(session_id=session_id)}
-        if not is_admin and profile.user_id not in member_ids and profile.user_id != safe_int(completed.get("started_by")):
-            raise HTTPException(status_code=403, detail="閲覧権限がありません。")
-        filters = _build_timeline_query_params(user_id=user_id, event_type=event_type, date_from=date_from, date_to=date_to)
-        timeline = await container.stats_repo.list_timeline_events(
-            session_id=session_id,
-            user_id=filters["user_id"],
-            event_type=filters["event_type"],
-            date_from=filters["date_from"],
-            date_to=filters["date_to"],
-        )
-        return render(
-            request,
-            "session_detail.html",
-            {
-                "title": "Session Detail",
-                "session": completed,
-                "timeline_events": _decorate_timeline_events(timeline),
-                "filters": filters,
-                "format_duration": format_duration,
-            },
-        )
-
-    @app.get("/admin", response_class=HTMLResponse, response_model=None)
-    async def admin_page(request: Request, guild_id: int | None = None, page: int = 1) -> Response:
-        profile = await _require_admin(request, container)
+    @app.get("/api/admin/settings")
+    async def api_admin_settings(request: Request) -> JSONResponse:
+        await _require_admin(request, container)
         settings = await _fetch_runtime_settings(container)
-        guild_configs = await container.config_repo.list_guild_configs()
-        bot_guilds = _decorate_bot_guilds(container)
-        selected_guild_id = guild_id or (bot_guilds[0]["id"] if bot_guilds else None)
-        selected_config = next((config for config in guild_configs if config.guild_id == selected_guild_id), None)
-        selected_config_saved = selected_config is not None
-        channel_catalog = _serialize_guild_channels(container, selected_guild_id) if selected_guild_id else {"categories": [], "voice_channels": [], "text_channels": []}
-        selected_guild = next((guild for guild in bot_guilds if guild["id"] == selected_guild_id), None)
-        if selected_guild_id is not None:
-            guild_name = selected_guild["name"] if selected_guild else str(selected_guild_id)
-            selected_config = _build_guild_config_defaults(selected_guild_id, guild_name, selected_config)
-        diagnostics = _build_guild_diagnostics(container, selected_guild_id, selected_config) if selected_guild_id and selected_config else []
-        error_logs, total_logs = await container.config_repo.get_error_logs(page=page, per_page=25)
-        recent_sessions = _decorate_guild_rows(await container.stats_repo.get_recent_sessions(limit=20), container)
-        return render(
-            request,
-            "admin.html",
+        return JSONResponse(
             {
-                "title": "アドミン管理",
-                "profile": profile,
-                "settings": settings,
-                "bot_guilds": bot_guilds,
-                "selected_guild": selected_guild,
-                "selected_guild_id": selected_guild_id,
-                "selected_config": selected_config,
-                "selected_config_saved": selected_config_saved,
-                "channel_catalog": channel_catalog,
-                "diagnostics": diagnostics,
-                "recent_sessions": recent_sessions,
-                "error_logs": error_logs,
-                "page": page,
-                "total_logs": total_logs,
-                "format_duration": format_duration,
-                "recommended_redirect_uri": _recommended_callback_uri(settings),
-            },
+                "settings": _redact_runtime_settings(settings),
+                "recommendedRedirectUri": _recommended_callback_uri(settings),
+            }
         )
 
-    @app.post("/admin/settings", response_model=None)
-    async def update_admin_settings(request: Request) -> Response:
+    @app.get("/api/admin/guilds")
+    async def api_admin_guilds(request: Request) -> JSONResponse:
         await _require_admin(request, container)
-        form = await request.form()
-        plain_values = {
-            "client_id": str(form.get("client_id", "")).strip(),
-            "redirect_uri": str(form.get("redirect_uri", "")).strip(),
-            "base_url": str(form.get("base_url", "")).strip(),
-            "owner_user_id": str(safe_int(form.get("owner_user_id"))),
-            "dashboard_host": str(form.get("dashboard_host", _default_dashboard_host())).strip(),
-            "dashboard_port": str(safe_int(form.get("dashboard_port"), _default_dashboard_port())),
-            "timeline_retention_days": str(max(1, safe_int(form.get("timeline_retention_days"), 90))),
-        }
-        secure_values = {
-            "bot_token": str(form.get("bot_token", "")).strip(),
-            "client_secret": str(form.get("client_secret", "")).strip(),
-        }
-        await container.config_repo.update_runtime_settings(plain_values, secure_values)
-        return RedirectResponse("/admin?saved=1", status_code=302)
+        return JSONResponse({"guilds": _decorate_bot_guilds(container)})
 
-    @app.post("/admin/guilds/{guild_id}", response_model=None)
-    async def update_guild_config(request: Request, guild_id: int) -> Response:
+    @app.get("/api/admin/guilds/{guild_id}")
+    async def api_admin_guild_detail(request: Request, guild_id: int) -> JSONResponse:
         await _require_admin(request, container)
-        form = await request.form()
         current = await container.config_repo.get_guild_config(guild_id)
-        guild = container.bot.get_guild(guild_id) if container.bot else None
+        guild = _resolve_guild(container, guild_id)
         guild_name = current.guild_name if current else (guild.name if guild else str(guild_id))
-        config = GuildConfig(
-            guild_id=guild_id,
-            guild_name=guild_name,
-            managed_category_id=safe_int(form.get("managed_category_id")) or None,
-            base_voice_channel_id=safe_int(form.get("base_voice_channel_id")) or None,
-            notification_channel_id=safe_int(form.get("notification_channel_id")) or None,
-            first_empty_notice_sec=safe_int(form.get("first_empty_notice_sec"), 30),
-            final_delete_sec=safe_int(form.get("final_delete_sec"), 90),
-            solo_cleanup_mode=_normalize_solo_cleanup_mode(form.get("solo_cleanup_mode")),
-            solo_notice_after_sec=max(60, safe_int(form.get("solo_notice_after_sec"), 3600)),
-            solo_delete_warning_after_sec=max(60, safe_int(form.get("solo_delete_warning_after_sec"), 1800)),
-            solo_repeat_notice_sec=max(300, safe_int(form.get("solo_repeat_notice_sec"), 3600)),
-            ranking_post_enabled=str(form.get("ranking_post_enabled", "")) == "on",
-            ranking_post_channel_id=safe_int(form.get("ranking_post_channel_id")) or None,
-            ranking_post_frequencies=_normalize_ranking_frequencies(form.getlist("ranking_post_frequencies")),
-            ranking_post_time=_normalize_hhmm(form.get("ranking_post_time")),
-            ranking_post_targets=_normalize_ranking_targets(form.getlist("ranking_post_targets")),
-            ranking_post_last_keys=current.ranking_post_last_keys.copy() if current else {},
-            team_mode=str(form.get("team_mode", "custom")).strip(),
-            team_names=[name.strip() for name in str(form.get("team_names", "A,B,C,D")).split(",") if name.strip()],
-            enabled=str(form.get("enabled", "")) == "on",
+        config = _build_guild_config_defaults(guild_id, guild_name, current)
+        config_dict = asdict(config)
+        channel_catalog = _serialize_guild_channels(container, guild_id)
+        channels = {
+            key: [{"id": entry["id"], "name": entry["name"], "kind": _CHANNEL_KIND_CODES.get(entry["kind"], entry["kind"])} for entry in entries]
+            for key, entries in channel_catalog.items()
+        }
+        return JSONResponse(
+            {
+                "config": {field: config_dict[field] for field in _GUILD_CONFIG_FIELDS},
+                "diagnostics": _build_guild_diagnostics(container, guild_id, config),
+                "channels": channels,
+            }
         )
-        await container.config_repo.upsert_guild_config(config)
-        await container.session_manager.refresh_guild_configs()
-        return RedirectResponse(f"/admin?guild_id={guild_id}&saved=1", status_code=302)
 
-    @app.post("/admin/guilds/{guild_id}/rankings/post", response_model=None)
-    async def post_guild_rankings(request: Request, guild_id: int) -> Response:
+    @app.get("/api/admin/error-logs")
+    async def api_admin_error_logs(request: Request, page: int = 1) -> JSONResponse:
         await _require_admin(request, container)
-        await container.session_manager.post_activity_rankings(guild_id, frequency="manual")
-        return RedirectResponse(f"/admin?guild_id={guild_id}&rankings_posted=1", status_code=302)
+        error_logs, total_logs = await container.config_repo.get_error_logs(page=page, per_page=25)
+        return JSONResponse({"errorLogs": error_logs, "totalLogs": total_logs, "page": page})
+
+    @app.get("/api/admin/recent-sessions")
+    async def api_admin_recent_sessions(request: Request) -> JSONResponse:
+        await _require_admin(request, container)
+        recent_sessions = _decorate_guild_rows(await container.stats_repo.get_recent_sessions(limit=20), container)
+        return JSONResponse(
+            {
+                "sessions": [
+                    {
+                        "sessionId": row.get("session_id"),
+                        "guild": row["guild"],
+                        "rootChannelName": row.get("root_channel_name"),
+                        "endedAt": row.get("ended_at"),
+                        "totalTalkSeconds": safe_int(row.get("total_talk_seconds")),
+                    }
+                    for row in recent_sessions
+                ]
+            }
+        )
 
     @app.post("/api/admin/settings")
     async def api_update_admin_settings(request: Request) -> JSONResponse:
@@ -1389,7 +1183,7 @@ def create_app(container: AppContainer) -> FastAPI:
                 "ok": True,
                 "message": "基本設定を保存しました。",
                 "warnings": warnings,
-                "settings": updated,
+                "settings": _redact_runtime_settings(updated),
                 "recommended_redirect_uri": recommended_redirect_uri,
             }
         )
@@ -1569,6 +1363,210 @@ def create_app(container: AppContainer) -> FastAPI:
         deleted = await container.config_repo.delete_all_notifications()
         return JSONResponse({"ok": True, "deleted": deleted, "unread_count": 0})
 
+    @app.get("/api/guilds/{guild_id}/reservations")
+    async def api_list_reservations(request: Request, guild_id: int) -> JSONResponse:
+        profile = await _require_profile(request)
+        if not await container.session_manager.is_guild_admin(guild_id, profile.user_id):
+            raise HTTPException(status_code=403, detail="サーバー管理者権限が必要です。")
+        schedules = await container.config_repo.list_scheduled_vcs(guild_id)
+        return JSONResponse({"reservations": [_serialize_scheduled_vc(item) for item in schedules]})
+
+    @app.post("/api/guilds/{guild_id}/reservations")
+    async def api_create_reservation(request: Request, guild_id: int) -> JSONResponse:
+        profile = await _require_profile(request)
+        if not await container.session_manager.is_guild_admin(guild_id, profile.user_id):
+            raise HTTPException(status_code=403, detail="サーバー管理者権限が必要です。")
+        guild = _resolve_guild(container, guild_id)
+        if guild is None:
+            raise HTTPException(status_code=404, detail="サーバーが見つかりません。")
+        payload = await request.json()
+        start_at = _parse_datetime_local(payload.get("start_at"))
+        if start_at is None:
+            raise HTTPException(status_code=400, detail="開始時刻の指定が必要です。")
+        end_at = _parse_datetime_local(payload.get("end_at"))
+        if end_at is not None and end_at <= start_at:
+            raise HTTPException(status_code=400, detail="終了時刻は開始時刻より後にしてください。")
+        repeat_weekdays = [safe_int(item, -1) for item in _list_payload(payload.get("repeat_weekdays"))]
+        repeat_weekdays = [item for item in repeat_weekdays if 0 <= item <= 6]
+        mention_targets = [str(item).strip() for item in _list_payload(payload.get("mention_targets")) if str(item).strip()]
+        mention_type = str(payload.get("mention_type", "none")).strip()
+        if mention_type not in {"none", "user", "role", "everyone", "here"}:
+            mention_type = "none"
+        scheduled = ScheduledVC(
+            id=None,
+            guild_id=guild.id,
+            guild_name=guild.name,
+            creator_user_id=profile.user_id,
+            creator_user_name=profile.display_name,
+            vc_name=str(payload.get("vc_name", "")).strip() or "Scheduled VC",
+            category_id=safe_int(payload.get("category_id")) or None,
+            user_limit=max(0, min(99, safe_int(payload.get("user_limit"), 0))),
+            bitrate=safe_int(payload.get("bitrate")) or None,
+            mention_type=mention_type,
+            mention_targets=mention_targets,
+            description=str(payload.get("description", "")).strip(),
+            start_at=start_at,
+            end_at=end_at,
+            repeat_mode=_normalize_repeat_mode(payload.get("repeat_mode")),
+            repeat_weekdays=repeat_weekdays,
+        )
+        await container.config_repo.create_scheduled_vc(scheduled)
+        return JSONResponse({"ok": True})
+
+    @app.delete("/api/reservations/{scheduled_id}")
+    async def api_delete_reservation(request: Request, scheduled_id: int) -> JSONResponse:
+        profile = await _require_profile(request)
+        schedules = await container.config_repo.list_scheduled_vcs(limit=1000)
+        scheduled = next((item for item in schedules if item.id == scheduled_id), None)
+        if scheduled is None:
+            raise HTTPException(status_code=404, detail="予約が見つかりません。")
+        if not await container.session_manager.is_guild_admin(scheduled.guild_id, profile.user_id):
+            raise HTTPException(status_code=403, detail="サーバー管理者権限が必要です。")
+        await container.session_manager.cancel_scheduled_vc(scheduled)
+        return JSONResponse({"ok": True})
+
+    @app.post("/api/voice/create")
+    async def api_create_voice_channel(request: Request) -> JSONResponse:
+        profile = await _require_profile(request)
+        payload = await request.json()
+        guild_id = safe_int(payload.get("guild_id"))
+        if not await container.session_manager.is_guild_admin(guild_id, profile.user_id):
+            raise HTTPException(status_code=403, detail="サーバー管理者権限が必要です。")
+        vc_type = str(payload.get("vc_type", "personal")).strip()
+        end_at = _parse_datetime_local(payload.get("end_at"))
+        if vc_type == "event" and end_at is None:
+            raise HTTPException(status_code=400, detail="一時イベントVCには終了時刻の指定が必要です。")
+        try:
+            channel = await container.session_manager.create_web_voice_channel(
+                guild_id=guild_id,
+                actor_id=profile.user_id,
+                actor_name=profile.display_name,
+                vc_type=vc_type,
+                owner_user_id=safe_int(payload.get("owner_user_id")) or None,
+                vc_name=str(payload.get("vc_name", "")).strip() or None,
+                user_limit=safe_int(payload.get("user_limit"), 0),
+                bitrate=safe_int(payload.get("bitrate")) or None,
+                end_at=end_at,
+                description=str(payload.get("description", "")).strip(),
+            )
+        except PermissionError as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        return JSONResponse({"ok": True, "channelId": str(channel.id)})
+
+    @app.get("/api/sessions/{session_id}")
+    async def api_session_detail(
+        request: Request,
+        session_id: str,
+        user_id: str | None = None,
+        event_type: str | None = None,
+        date_from: str | None = None,
+        date_to: str | None = None,
+    ) -> JSONResponse:
+        profile = await _require_profile(request)
+        completed = await container.stats_repo.get_completed_session(session_id)
+        if completed is None:
+            raise HTTPException(status_code=404, detail="セッションが見つかりません。")
+        guild_id = safe_int(completed.get("guild_id"))
+        is_admin = await container.session_manager.is_guild_admin(guild_id, profile.user_id)
+        member_ids = {safe_int(item.get("user_id")) for item in await container.stats_repo.list_timeline_events(session_id=session_id)}
+        if not is_admin and profile.user_id not in member_ids and profile.user_id != safe_int(completed.get("started_by")):
+            raise HTTPException(status_code=403, detail="閲覧権限がありません。")
+        filters = _build_timeline_query_params(user_id=user_id, event_type=event_type, date_from=date_from, date_to=date_to)
+        timeline = await container.stats_repo.list_timeline_events(
+            session_id=session_id,
+            user_id=filters["user_id"],
+            event_type=filters["event_type"],
+            date_from=filters["date_from"],
+            date_to=filters["date_to"],
+        )
+        guild = _resolve_guild(container, guild_id)
+        return JSONResponse(
+            {
+                "session": {
+                    "sessionId": completed.get("session_id"),
+                    "guild": _serialize_guild_identity(guild, guild_id, str(completed.get("guild_name") or guild_id)),
+                    "rootChannelName": completed.get("root_channel_name"),
+                    "startedBy": str(safe_int(completed.get("started_by"))),
+                    "startedByName": completed.get("started_by_name"),
+                    "startedAt": completed.get("started_at"),
+                    "endedAt": completed.get("ended_at"),
+                    "totalTalkSeconds": safe_int(completed.get("total_talk_seconds")),
+                    "totalAfkSeconds": safe_int(completed.get("total_afk_seconds")),
+                },
+                "timeline": _decorate_timeline_events(timeline),
+            }
+        )
+
+    @app.get("/api/stats/me")
+    async def api_stats_me(request: Request, period: str = "all", guild_id: int | None = None) -> JSONResponse:
+        profile = await _require_profile(request)
+        summary = await container.stats_repo.get_user_period_summary(profile.user_id, period)
+        breakdown_rows = _decorate_guild_rows(await container.stats_repo.get_user_guild_breakdown(profile.user_id, period), container)
+        known_guild_rows = _decorate_guild_rows(await container.stats_repo.get_known_guilds_for_user(profile.user_id), container)
+        daily_chart = _build_daily_chart_rows(await container.stats_repo.get_user_daily_chart(profile.user_id, guild_id))
+        hourly_heatmap = _build_hourly_heatmap_slots(await container.stats_repo.get_user_hourly_heatmap(profile.user_id, guild_id))
+        talk_ratio = _build_talk_ratio(summary)
+        return JSONResponse(
+            {
+                "summary": {
+                    "talkSeconds": safe_int(summary.get("talk_seconds")),
+                    "afkSeconds": safe_int(summary.get("afk_seconds")),
+                    "effectiveSeconds": safe_int(summary.get("effective_seconds")),
+                },
+                "talkRatio": {
+                    "effectivePercent": talk_ratio.get("effective_percent", 0.0),
+                    "afkPercent": talk_ratio.get("afk_percent", 0.0),
+                },
+                "breakdown": [
+                    {"guild": row["guild"], "talkSeconds": safe_int(row.get("talk_seconds")), "afkSeconds": safe_int(row.get("afk_seconds"))}
+                    for row in breakdown_rows
+                ],
+                "knownGuilds": [row["guild"] for row in known_guild_rows],
+                "dailyChart": [
+                    {
+                        "date": row["date"],
+                        "talkSeconds": row["talk_seconds"],
+                        "afkSeconds": row["afk_seconds"],
+                        "effectiveSeconds": row["effective_seconds"],
+                        "widthPercent": row["width_percent"],
+                    }
+                    for row in daily_chart
+                ],
+                "hourlyHeatmap": [
+                    {"hour": row["hour"], "talkSeconds": row["talk_seconds"], "afkSeconds": row["afk_seconds"], "alpha": row["alpha"]}
+                    for row in hourly_heatmap
+                ],
+            }
+        )
+
+    @app.get("/api/rankings")
+    async def api_rankings(request: Request, period: str = "all", guild_id: int | None = None) -> JSONResponse:
+        profile = await _require_profile(request)
+        rankings_data = await container.stats_repo.get_rankings(period=period, guild_id=guild_id, limit=100)
+        known_guild_rows = _decorate_guild_rows(await container.stats_repo.get_known_guilds_for_user(profile.user_id), container)
+        top_rankings, other_rankings = _build_rankings_view(rankings_data, container)
+
+        def _reshape_ranking_row(row: dict[str, Any]) -> dict[str, Any]:
+            return {
+                "rank": safe_int(row.get("rank")),
+                "guild": row["guild"],
+                "user": row["user"],
+                "talkSeconds": safe_int(row.get("talk_seconds")),
+                "afkSeconds": safe_int(row.get("afk_seconds")),
+            }
+
+        return JSONResponse(
+            {
+                "topRankings": [_reshape_ranking_row(row) for row in top_rankings],
+                "otherRankings": [_reshape_ranking_row(row) for row in other_rankings],
+                "knownGuilds": [row["guild"] for row in known_guild_rows],
+            }
+        )
+
     _CHANNEL_KIND_CODES = {"カテゴリ": "category", "ボイス": "voice", "テキスト": "text"}
 
     @app.get("/api/guilds/{guild_id}/channels")
@@ -1582,6 +1580,23 @@ def create_app(container: AppContainer) -> FastAPI:
             for key, entries in catalog.items()
         }
         return JSONResponse(reshaped)
+
+    @app.get("/api/guilds/mine")
+    async def api_my_admin_guilds(request: Request) -> JSONResponse:
+        profile = await _require_profile(request)
+        return JSONResponse({"guilds": await _admin_guilds_for_profile(container, profile)})
+
+    @app.get("/api/guilds/{guild_id}/config")
+    async def api_guild_config_summary(request: Request, guild_id: int) -> JSONResponse:
+        profile = await _require_profile(request)
+        if not await container.session_manager.is_guild_admin(guild_id, profile.user_id):
+            raise HTTPException(status_code=403, detail="サーバー管理者権限が必要です。")
+        config = await container.config_repo.get_guild_config(guild_id)
+        return JSONResponse(
+            {
+                "managedCategoryId": str(config.managed_category_id) if config and config.managed_category_id is not None else None,
+            }
+        )
 
     @app.get("/api/guilds/{guild_id}/members")
     async def api_guild_members(request: Request, guild_id: int) -> JSONResponse:

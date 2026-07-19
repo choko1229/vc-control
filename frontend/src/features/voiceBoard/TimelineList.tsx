@@ -4,19 +4,7 @@ import { Select } from '../../components/Field'
 import { EmptyState } from '../../components/EmptyState'
 import { Skeleton } from '../../components/Skeleton'
 import { useVoiceTimeline } from './useVoiceSession'
-
-const EVENT_TYPE_KEYS: Record<string, string> = {
-  vc_started: 'voice.eventVcStarted',
-  vc_ended: 'voice.eventVcEnded',
-  member_joined: 'voice.eventMemberJoined',
-  member_left: 'voice.eventMemberLeft',
-  member_moved: 'voice.eventMemberMoved',
-  member_mute_changed: 'voice.eventMemberMuteChanged',
-  teams_split: 'voice.eventTeamsSplit',
-  teams_assembled: 'voice.eventTeamsAssembled',
-  member_recalled: 'voice.eventMemberRecalled',
-  voice_settings_changed: 'voice.eventVoiceSettingsChanged',
-}
+import { EVENT_TYPE_KEYS } from './eventTypeLabels'
 
 export interface TimelineListProps {
   guildId: string

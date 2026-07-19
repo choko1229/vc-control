@@ -14,8 +14,21 @@
       rel="stylesheet"
     />
     <title>VC Control</title>
-    <script type="module" crossorigin src="/assets/index-BNXYu4Tr.js"></script>
-    <link rel="stylesheet" crossorigin href="/assets/index-CHAtHIfj.css">
+    <script>
+      (function () {
+        try {
+          var preference = localStorage.getItem('vc-control-theme-preference') || 'dark';
+          var resolved = preference === 'system'
+            ? (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
+            : preference;
+          document.documentElement.dataset.theme = resolved;
+        } catch (error) {
+          document.documentElement.dataset.theme = 'dark';
+        }
+      })();
+    </script>
+    <script type="module" crossorigin src="/assets/index-kVeAOTEq.js"></script>
+    <link rel="stylesheet" crossorigin href="/assets/index-C6ZAF4rC.css">
   </head>
   <body>
     <div id="root"></div>

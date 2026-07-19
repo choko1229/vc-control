@@ -33,158 +33,29 @@
   {% block head_extra %}{% endblock %}
 </head>
 
-<body
-  data-page="{{ page_name | default('default') }}"
-  data-guild-id="{{ guild_id | default('') }}"
-  data-root-channel-id="{{ root_channel_id | default('') }}"
-  data-current-user-id="{{ current_user_view.id if current_user_view else '' }}"
-  data-is-owner="{{ '1' if is_owner else '0' }}"
->
-  {% if current_user %}
-    <div class="app-shell">
-      <aside class="app-rail">
-        <a href="/dashboard/me" class="rail-brand" title="VC Control">
-          <span class="rail-brand-mark">VC</span>
-        </a>
-
-        <nav class="rail-nav">
-          <a class="rail-link {% if page_name == 'dashboard' %}is-active{% endif %}" href="/dashboard/me" title="ホーム">
-            <span class="rail-link-icon">⌂</span>
-            <span class="rail-link-label">ホーム</span>
-          </a>
-
-          <a class="rail-link {% if page_name == 'stats' %}is-active{% endif %}" href="/dashboard/stats/me" title="統計">
-            <span class="rail-link-icon">▤</span>
-            <span class="rail-link-label">統計</span>
-          </a>
-
-          <a class="rail-link {% if page_name == 'rankings' %}is-active{% endif %}" href="/dashboard/rankings" title="ランキング">
-            <span class="rail-link-icon">#</span>
-            <span class="rail-link-label">順位</span>
-          </a>
-
-          <a class="rail-link {% if page_name == 'reservations' %}is-active{% endif %}" href="/dashboard/reservations" title="VC予約">
-            <span class="rail-link-icon">📅</span>
-            <span class="rail-link-label">予約</span>
-          </a>
-
-          <a class="rail-link {% if page_name == 'user-settings' %}is-active{% endif %}" href="/dashboard/settings" title="ユーザー設定">
-            <span class="rail-link-icon">⚙</span>
-            <span class="rail-link-label">設定</span>
-          </a>
-
-          {% if is_owner %}
-            <a class="rail-link {% if page_name == 'admin' %}is-active{% endif %}" href="/admin" title="アドミン管理">
-              <span class="rail-link-icon">◇</span>
-              <span class="rail-link-label">管理</span>
-            </a>
-          {% endif %}
-        </nav>
-
-        <div class="rail-footer">
-          <a class="rail-link" href="/logout" title="ログアウト">
-            <span class="rail-link-icon">⇠</span>
-            <span class="rail-link-label">終了</span>
-          </a>
-        </div>
-      </aside>
-
-      <div class="app-frame">
-        <header class="frame-header">
-          <div class="frame-header-main">
-            <button type="button" class="mobile-sidebar-button" data-page-sidebar-toggle aria-label="サイドバー切り替え">
-              ☰
-            </button>
-
-            <div class="frame-copy">
-              <span class="frame-eyebrow">{% block header_eyebrow %}VC Control{% endblock %}</span>
-              <h1>{% block header_title %}{{ title }}{% endblock %}</h1>
-              <p>{% block header_subtitle %}{% endblock %}</p>
-            </div>
-          </div>
-
-          <div class="frame-header-actions">
-            {% block header_actions %}{% endblock %}
-
-            <div class="realtime-status" data-realtime-status="connecting" title="Realtime connection">
-              <span class="realtime-status-dot"></span>
-              <span data-realtime-status-label>接続中</span>
-            </div>
-
-            <button type="button" class="notification-button" data-notification-toggle aria-label="通知センター">
-              <span class="notification-icon">🔔</span>
-              <span class="notification-count" data-notification-count hidden>0</span>
-            </button>
-
-            {% if current_user_view %}
-              <div class="current-user">
-                <span class="avatar avatar-sm">
-                  {% if current_user_view.avatar_url %}
-                    <img src="{{ current_user_view.avatar_url }}" alt="{{ current_user_view.display_name }}">
-                  {% else %}
-                    <span>{{ current_user_view.initials }}</span>
-                  {% endif %}
-                </span>
-
-                <div class="current-user-copy">
-                  <strong>{{ current_user_view.display_name }}</strong>
-                  <small>{% if is_owner %}Bot Owner{% else %}ログイン中{% endif %}</small>
-                </div>
-              </div>
-            {% endif %}
-          </div>
-        </header>
-
-        <main class="frame-body">
-          {% block content %}{% endblock %}
-        </main>
+<body data-page="{{ page_name | default('default') }}">
+  <div class="auth-shell">
+    <aside class="auth-rail">
+      <div class="rail-brand">
+        <span class="rail-brand-mark">VC</span>
       </div>
-    </div>
 
-    <div class="page-overlay" data-page-overlay hidden></div>
-    <aside class="notification-drawer" data-notification-drawer hidden>
-      <div class="notification-drawer-header">
-        <strong>通知センター</strong>
-        <div class="notification-actions">
-          <button type="button" class="inline-button" data-notification-read-all>一括既読</button>
-          {% if is_owner %}
-            <button type="button" class="inline-button danger" data-notification-delete-all>全削除</button>
-          {% endif %}
-          <button type="button" class="inline-button" data-notification-close>閉じる</button>
-        </div>
-      </div>
-      <div class="notification-list" data-notification-list>
-        <div class="sidebar-empty">通知はありません。</div>
+      <div class="auth-rail-copy">
+        <strong>VC Control</strong>
+        <small>Discord VC Dashboard</small>
       </div>
     </aside>
-  {% else %}
-    <div class="auth-shell">
-      <aside class="auth-rail">
-        <div class="rail-brand">
-          <span class="rail-brand-mark">VC</span>
-        </div>
 
-        <div class="auth-rail-copy">
-          <strong>VC Control</strong>
-          <small>Discord VC Dashboard</small>
-        </div>
-      </aside>
-
-      <main class="auth-stage">
-        {{ self.content() }}
-      </main>
-    </div>
-  {% endif %}
+    <main class="auth-stage">
+      {{ self.content() }}
+    </main>
+  </div>
 
   <div id="toast-stack" class="toast-stack" aria-live="polite" aria-atomic="true"></div>
 
   <script src="/static/js/toast.js" defer></script>
   <script src="/static/js/theme.js" defer></script>
   <script src="/static/js/app.js" defer></script>
-  <script src="/static/js/realtime.js" defer></script>
-  <script src="/static/js/server-settings.js" defer></script>
-  <script src="/static/js/stats.js" defer></script>
-  <script src="/static/js/user-settings.js" defer></script>
 
   {% block scripts_extra %}{% endblock %}
 </body>

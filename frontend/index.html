@@ -14,6 +14,19 @@
       rel="stylesheet"
     />
     <title>VC Control</title>
+    <script>
+      (function () {
+        try {
+          var preference = localStorage.getItem('vc-control-theme-preference') || 'dark';
+          var resolved = preference === 'system'
+            ? (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
+            : preference;
+          document.documentElement.dataset.theme = resolved;
+        } catch (error) {
+          document.documentElement.dataset.theme = 'dark';
+        }
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>
