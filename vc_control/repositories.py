@@ -134,6 +134,7 @@ class ConfigRepository:
                     team_mode TEXT NOT NULL DEFAULT 'custom',
                     team_names_json TEXT NOT NULL DEFAULT '["A", "B", "C", "D"]',
                     enabled INTEGER NOT NULL DEFAULT 0,
+                    guild_language TEXT NOT NULL DEFAULT 'ja',
                     updated_at TEXT NOT NULL
                 );
                 CREATE TABLE IF NOT EXISTS session_snapshots (
@@ -224,6 +225,7 @@ class ConfigRepository:
             "ranking_post_time": "TEXT NOT NULL DEFAULT '21:00'",
             "ranking_post_targets_json": "TEXT NOT NULL DEFAULT '[\"top_talkers\", \"top_hosts\", \"team_splits\", \"night_owls\"]'",
             "ranking_post_last_keys_json": "TEXT NOT NULL DEFAULT '{}'",
+            "guild_language": "TEXT NOT NULL DEFAULT 'ja'",
         }
         for column, definition in additions.items():
             if column not in existing:
@@ -365,8 +367,8 @@ class ConfigRepository:
                     solo_cleanup_mode, solo_notice_after_sec, solo_delete_warning_after_sec,
                     solo_repeat_notice_sec, ranking_post_enabled, ranking_post_channel_id,
                     ranking_post_frequencies_json, ranking_post_time, ranking_post_targets_json,
-                    ranking_post_last_keys_json, team_mode, team_names_json, enabled, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ranking_post_last_keys_json, team_mode, team_names_json, enabled, guild_language, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(guild_id) DO UPDATE SET
                     guild_name = excluded.guild_name,
                     managed_category_id = excluded.managed_category_id,
@@ -387,6 +389,7 @@ class ConfigRepository:
                     team_mode = excluded.team_mode,
                     team_names_json = excluded.team_names_json,
                     enabled = excluded.enabled,
+                    guild_language = excluded.guild_language,
                     updated_at = excluded.updated_at
                 """,
                 (
@@ -410,6 +413,7 @@ class ConfigRepository:
                     record["team_mode"],
                     json_dumps(record["team_names_json"]),
                     record["enabled"],
+                    record["guild_language"],
                     now,
                 ),
             )

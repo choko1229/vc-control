@@ -12,42 +12,54 @@ from zoneinfo import ZoneInfo
 import discord
 from fastapi import WebSocket
 
+from vc_control.embeds import BRAND_BLUE, COLOR_ERROR, COLOR_NOTIFY, COLOR_SUCCESS, COLOR_WARNING, build_embed
+from vc_control.i18n import t
 from vc_control.models import DEFAULT_TEAM_NAMES, CompletedMember, CompletedSession, GuildConfig, ScheduledVC, SessionSnapshot, SnapshotMember
 from vc_control.repositories import ConfigRepository, StatsRepository
 from vc_control.utils import format_duration, make_session_key, normalize_ids, utcnow
 
 
-TIMELINE_EVENT_LABELS = {
-    "vc_started": "VC開始",
-    "vc_ended": "VC終了",
-    "member_joined": "参加",
-    "member_left": "退出",
-    "member_moved": "移動",
-    "member_mute_changed": "ミュート変更",
-    "teams_split": "チーム分割",
-    "teams_assembled": "集合",
-    "member_recalled": "呼び戻し",
-    "voice_settings_changed": "VC名変更",
-    "team_changed": "チーム変更",
-    "bot_restart_restored": "BOT再起動復元",
-    "scheduled_vc_created": "予約VC作成",
-    "web_vc_created": "Web VC作成",
-    "access_changed": "アクセス変更",
+TIMELINE_EVENT_LABEL_KEYS = {
+    "vc_started": "timeline.vc_started",
+    "vc_ended": "timeline.vc_ended",
+    "member_joined": "timeline.member_joined",
+    "member_left": "timeline.member_left",
+    "member_moved": "timeline.member_moved",
+    "member_mute_changed": "timeline.member_mute_changed",
+    "teams_split": "timeline.teams_split",
+    "teams_assembled": "timeline.teams_assembled",
+    "member_recalled": "timeline.member_recalled",
+    "voice_settings_changed": "timeline.voice_settings_changed",
+    "team_changed": "timeline.team_changed",
+    "bot_restart_restored": "timeline.bot_restart_restored",
+    "scheduled_vc_created": "timeline.scheduled_vc_created",
+    "web_vc_created": "timeline.web_vc_created",
+    "access_changed": "timeline.access_changed",
 }
 
-ACCESS_MODE_LABELS = {
-    "public": "公開",
-    "invite": "招待制",
-    "role": "ロール制限",
+ACCESS_MODE_LABEL_KEYS = {
+    "public": "access.mode.public",
+    "invite": "access.mode.invite",
+    "role": "access.mode.role",
 }
 
 LOCAL_TZ = ZoneInfo("Asia/Tokyo")
-RANKING_TARGET_LABELS = {
-    "top_talkers": "今日最も通話した人",
-    "top_hosts": "最も人を集めたVC主",
-    "team_splits": "チーム分け回数",
-    "night_owls": "深夜勢ランキング",
+RANKING_TARGET_LABEL_KEYS = {
+    "top_talkers": "ranking.target.top_talkers",
+    "top_hosts": "ranking.target.top_hosts",
+    "team_splits": "ranking.target.team_splits",
+    "night_owls": "ranking.target.night_owls",
 }
+
+
+def _timeline_label(event_type: str, locale: str | None) -> str:
+    key = TIMELINE_EVENT_LABEL_KEYS.get(event_type)
+    return t(key, locale) if key else event_type
+
+
+def _access_mode_label(mode: str, locale: str | None) -> str:
+    key = ACCESS_MODE_LABEL_KEYS.get(mode)
+    return t(key, locale) if key else mode
 
 
 @dataclass(slots=True)
@@ -389,9 +401,9 @@ class SessionManager:
         if channel is None:
             return False
         period = self._ranking_period_for_frequency(frequency)
-        targets = [target for target in config.ranking_post_targets if target in RANKING_TARGET_LABELS]
+        targets = [target for target in config.ranking_post_targets if target in RANKING_TARGET_LABEL_KEYS]
         if not targets:
-            targets = list(RANKING_TARGET_LABELS)
+            targets = list(RANKING_TARGET_LABEL_KEYS)
         bundle = await self.stats_repo.get_activity_ranking_bundle(guild_id, period=period, limit=5)
         embed = self._build_activity_ranking_embed(config, bundle, targets, frequency)
         try:
@@ -411,33 +423,41 @@ class SessionManager:
         targets: list[str],
         frequency: str,
     ) -> discord.Embed:
-        frequency_labels = {"manual": "手動投稿", "daily": "毎日", "weekly": "毎週", "monthly": "毎月"}
-        title_suffix = frequency_labels.get(frequency, frequency)
-        embed = discord.Embed(
-            title=f"アクティビティランキング - {title_suffix}",
-            description=f"{config.guild_name} の活動サマリーです。",
-            color=discord.Color.blurple(),
-            timestamp=utcnow(),
+        locale = config.guild_language
+        title_suffix = t(f"ranking.freq.{frequency}", locale) if frequency in {"manual", "daily", "weekly", "monthly"} else frequency
+        embed = build_embed(
+            locale,
+            "embed.ranking.title",
+            "embed.ranking.description",
+            color=BRAND_BLUE,
+            title_fmt={"suffix": title_suffix},
+            description_fmt={"guild": config.guild_name},
         )
+        embed.timestamp = utcnow()
         for target in targets:
             rows = bundle.get(target, [])
             lines: list[str] = []
             for row in rows[:5]:
                 rank = int(row.get("rank") or len(lines) + 1)
-                user = row.get("user_name") or row.get("user_id") or "不明"
+                user = row.get("user_name") or row.get("user_id") or t("common.unknown", locale)
                 if target == "top_hosts":
-                    value = f"{int(row.get('gathered_count') or 0)}人 / {int(row.get('session_count') or 0)}VC"
+                    value = t(
+                        "ranking.hostValue",
+                        locale,
+                        gathered=int(row.get("gathered_count") or 0),
+                        sessions=int(row.get("session_count") or 0),
+                    )
                 elif target == "team_splits":
-                    value = f"{int(row.get('split_count') or 0)}回"
+                    value = t("ranking.splitValue", locale, count=int(row.get("split_count") or 0))
                 else:
                     value = format_duration(int(row.get("talk_seconds") or 0))
                 lines.append(f"{rank}. {user} - {value}")
             embed.add_field(
-                name=RANKING_TARGET_LABELS[target],
-                value="\n".join(lines) if lines else "データがありません",
+                name=t(RANKING_TARGET_LABEL_KEYS[target], locale),
+                value="\n".join(lines) if lines else t("common.noData", locale),
                 inline=False,
             )
-        embed.set_footer(text="深夜勢: 0時〜5時")
+        embed.set_footer(text=t("ranking.footer", locale))
         return embed
 
     async def restore_sessions(self) -> None:
@@ -510,15 +530,16 @@ class SessionManager:
             management_url = await self.build_management_url(session.guild_id, session.root_channel_id)
             await self._send_restart_restored_management_panel(session, management_url)
             await self._persist_and_broadcast(session)
+            restore_locale = self.guild_configs.get(session.guild_id).guild_language if self.guild_configs.get(session.guild_id) else None
             await self._record_timeline_event(
                 session,
                 "bot_restart_restored",
-                f"{session.root_channel_name} はBot再起動後に復元されました。",
+                t("event.restoredAfterRestart", restore_locale, channel=session.root_channel_name),
             )
             await self._publish_important_event(
                 "bot_restart_restored",
-                "Bot再起動から復元",
-                f"{session.root_channel_name} はBot再起動後に復元されました。",
+                t("event.title.restored", restore_locale),
+                t("event.restoredAfterRestart", restore_locale, channel=session.root_channel_name),
                 session,
             )
             self.logger.info("セッションを復元しました: session_key=%s session_id=%s", session.session_key, session.session_id)
@@ -594,12 +615,11 @@ class SessionManager:
             return
         from vc_control.team_ui import TeamPanelView
 
-        embed = self._build_management_panel_embed(session, management_url)
-        embed.title = "VC管理パネル(復元)"
-        embed.description = (
-            "このVCセッションはBot再起動後に復元されました。\n"
-            "古い管理パネルのボタンが反応しない場合は、この新しいパネルを使用してください。"
-        )
+        config = await self.get_guild_config(session.guild_id)
+        locale = config.guild_language if config else None
+        embed = self._build_management_panel_embed(session, management_url, locale)
+        embed.title = t("embed.management_panel_restored.title", locale)
+        embed.description = t("embed.management_panel_restored.description", locale)
         await self._send_embed(
             root_channel,
             embed,
@@ -743,15 +763,16 @@ class SessionManager:
         management_url = await self.build_management_url(session.guild_id, session.root_channel_id)
         await self._send_restart_restored_management_panel(session, management_url)
         await self._persist_and_broadcast(session)
+        restore_locale = self.guild_configs.get(session.guild_id).guild_language if self.guild_configs.get(session.guild_id) else None
         await self._record_timeline_event(
             session,
             "bot_restart_restored",
-            f"{session.root_channel_name} は現在のDiscord状態から復元されました。",
+            t("event.restoredFromDiscordState", restore_locale, channel=session.root_channel_name),
         )
         await self._publish_important_event(
             "bot_restart_restored",
-            "Bot再起動から復元",
-            f"{session.root_channel_name} は現在のDiscord状態から復元されました。",
+            t("event.title.restored", restore_locale),
+            t("event.restoredFromDiscordState", restore_locale, channel=session.root_channel_name),
             session,
         )
         self.logger.info("Discord状態からセッションを復元しました: session_key=%s members=%s", session.session_key, len(non_bot_members))
@@ -952,47 +973,57 @@ class SessionManager:
         session: LiveSession,
         starter: discord.Member,
         management_url: str | None,
+        locale: str | None = None,
     ) -> discord.Embed:
-        embed = discord.Embed(
-            title="VC開始",
-            description=f"**{session.root_channel_name}** のセッションを開始しました。",
-            color=discord.Color.green(),
+        embed = build_embed(
+            locale,
+            "embed.vc_started.title",
+            "embed.vc_started.description",
+            color=COLOR_SUCCESS,
+            description_fmt={"channel": session.root_channel_name},
         )
-        embed.add_field(name="VC名", value=session.root_channel_name, inline=False)
-        embed.add_field(name="開始時刻", value=self._format_discord_timestamp(session.started_at), inline=True)
-        embed.add_field(name="参加者", value=starter.mention, inline=True)
-        embed.add_field(name="VC管理", value=management_url or "未設定", inline=False)
+        embed.add_field(name=t("field.vcName", locale), value=session.root_channel_name, inline=False)
+        embed.add_field(name=t("field.startedAt", locale), value=self._format_discord_timestamp(session.started_at), inline=True)
+        embed.add_field(name=t("field.participant", locale), value=starter.mention, inline=True)
+        embed.add_field(name=t("field.management", locale), value=management_url or t("common.notSet", locale), inline=False)
         return embed
 
-    def _build_management_panel_embed(self, session: LiveSession, management_url: str | None) -> discord.Embed:
-        embed = discord.Embed(
-            title="VC管理パネル",
-            description="チーム操作はこのメッセージか `/team` から実行できます。",
-            color=discord.Color.blue(),
+    def _build_management_panel_embed(self, session: LiveSession, management_url: str | None, locale: str | None = None) -> discord.Embed:
+        embed = build_embed(
+            locale,
+            "embed.management_panel.title",
+            "embed.management_panel.description",
+            color=BRAND_BLUE,
         )
-        embed.add_field(name="VC名", value=session.root_channel_name, inline=False)
-        embed.add_field(name="現在の管理者", value=f"<@{session.owner_user_id}>", inline=True)
-        embed.add_field(name="チーム", value=", ".join(session.team_names), inline=True)
-        embed.add_field(name="VC管理", value=management_url or "未設定", inline=False)
+        embed.add_field(name=t("field.vcName", locale), value=session.root_channel_name, inline=False)
+        embed.add_field(name=t("field.currentOwner", locale), value=f"<@{session.owner_user_id}>", inline=True)
+        embed.add_field(name=t("field.teams", locale), value=", ".join(session.team_names), inline=True)
+        embed.add_field(name=t("field.management", locale), value=management_url or t("common.notSet", locale), inline=False)
         return embed
 
-    def _build_end_embed(self, session: LiveSession, completed: CompletedSession) -> discord.Embed:
+    def _build_end_embed(self, session: LiveSession, completed: CompletedSession, locale: str | None = None) -> discord.Embed:
         session_seconds = max(0, int((completed.ended_at - completed.started_at).total_seconds()))
         member_lines = [
             f"- {member.user_name}: {format_duration(member.talk_seconds)}"
             for member in sorted(completed.members, key=lambda item: item.talk_seconds, reverse=True)
         ]
-        embed = discord.Embed(
-            title="VC終了",
-            description=f"**{session.root_channel_name}** のセッションを終了しました。",
-            color=discord.Color.blurple(),
+        embed = build_embed(
+            locale,
+            "embed.vc_ended.title",
+            "embed.vc_ended.description",
+            color=BRAND_BLUE,
+            description_fmt={"channel": session.root_channel_name},
         )
-        embed.add_field(name="VC", value=session.root_channel_name, inline=False)
-        embed.add_field(name="開始", value=self._format_discord_timestamp(completed.started_at), inline=True)
-        embed.add_field(name="終了", value=self._format_discord_timestamp(completed.ended_at), inline=True)
-        embed.add_field(name="時間", value=format_duration(session_seconds), inline=True)
-        embed.add_field(name="参加ユーザー一覧", value="\n".join(member_lines) if member_lines else "参加者なし", inline=False)
-        embed.add_field(name="VC全体の利用時間", value=format_duration(completed.total_talk_seconds), inline=False)
+        embed.add_field(name=t("field.vc", locale), value=session.root_channel_name, inline=False)
+        embed.add_field(name=t("field.startedShort", locale), value=self._format_discord_timestamp(completed.started_at), inline=True)
+        embed.add_field(name=t("field.endedShort", locale), value=self._format_discord_timestamp(completed.ended_at), inline=True)
+        embed.add_field(name=t("field.duration", locale), value=format_duration(session_seconds), inline=True)
+        embed.add_field(
+            name=t("field.participantList", locale),
+            value="\n".join(member_lines) if member_lines else t("common.noParticipants", locale),
+            inline=False,
+        )
+        embed.add_field(name=t("field.totalTalkTime", locale), value=format_duration(completed.total_talk_seconds), inline=False)
         return embed
 
     async def _resolve_notice_channel(
@@ -1184,6 +1215,8 @@ class SessionManager:
             self.logger.exception("scheduled VC notification send failed: scheduled_id=%s", scheduled.id)
 
     async def _record_scheduled_vc_timeline(self, scheduled: ScheduledVC, channel: discord.VoiceChannel, event_type: str, message: str) -> None:
+        config = self.guild_configs.get(scheduled.guild_id)
+        locale = config.guild_language if config else None
         try:
             event = await self.stats_repo.record_timeline_event(
                 session_id=f"scheduled:{scheduled.id}",
@@ -1192,7 +1225,7 @@ class SessionManager:
                 root_channel_id=str(channel.id),
                 root_channel_name=channel.name,
                 event_type=event_type,
-                event_label=TIMELINE_EVENT_LABELS.get(event_type, event_type),
+                event_label=_timeline_label(event_type, locale),
                 user_id=str(scheduled.creator_user_id),
                 user_name=scheduled.creator_user_name,
                 message=message,
@@ -1212,6 +1245,8 @@ class SessionManager:
         actor_name: str,
         vc_type: str,
     ) -> None:
+        config = self.guild_configs.get(guild.id)
+        locale = config.guild_language if config else None
         try:
             event = await self.stats_repo.record_timeline_event(
                 session_id=f"web:{channel.id}",
@@ -1220,10 +1255,10 @@ class SessionManager:
                 root_channel_id=str(channel.id),
                 root_channel_name=channel.name,
                 event_type="web_vc_created",
-                event_label=TIMELINE_EVENT_LABELS.get("web_vc_created", "Web VC作成"),
+                event_label=_timeline_label("web_vc_created", locale),
                 user_id=str(actor_id),
                 user_name=actor_name,
-                message=f"{channel.name} がWebダッシュボードから作成されました。",
+                message=t("embed.web_vc_created.description", locale, channel=channel.name),
                 payload={"vc_type": vc_type},
                 retention_days=await self._timeline_retention_days(),
             )
@@ -1240,6 +1275,8 @@ class SessionManager:
         actor_name: str,
         vc_type: str,
     ) -> None:
+        config = self.guild_configs.get(guild.id)
+        locale = config.guild_language if config else None
         payload = {
             "guild_id": str(guild.id),
             "root_channel_id": str(channel.id),
@@ -1250,8 +1287,8 @@ class SessionManager:
         try:
             notification = await self.config_repo.create_notification(
                 event_type="web_vc_created",
-                title="Web VCが作成されました",
-                message=f"{channel.name} が {actor_name} によって作成されました。",
+                title=t("embed.web_vc_created.title", locale),
+                message=t("event.webVcCreatedByActor", locale, channel=channel.name, actor=actor_name),
                 guild_id=guild.id,
                 root_channel_id=channel.id,
                 recipient_user_id=None,
@@ -1263,8 +1300,8 @@ class SessionManager:
                 "id": None,
                 "created_at": utcnow().isoformat(),
                 "event_type": "web_vc_created",
-                "title": "Web VCが作成されました",
-                "message": f"{channel.name} が {actor_name} によって作成されました。",
+                "title": t("embed.web_vc_created.title", locale),
+                "message": t("event.webVcCreatedByActor", locale, channel=channel.name, actor=actor_name),
                 "guild_id": str(guild.id),
                 "root_channel_id": str(channel.id),
                 "recipient_user_id": None,
@@ -1310,11 +1347,11 @@ class SessionManager:
                 except (discord.Forbidden, discord.HTTPException, discord.NotFound):
                     owner = None
             owner_name = owner.display_name if owner is not None else str(owner_user_id)
-            target_name = (vc_name or "").strip() or f"{owner_name}のVC"
+            target_name = (vc_name or "").strip() or t("msg.personalVcName", config.guild_language, name=owner_name)
         else:
             if end_at is None:
                 raise ValueError("一時イベントVCには終了時刻の指定が必要です。")
-            target_name = (vc_name or "").strip() or "一時イベントVC"
+            target_name = (vc_name or "").strip() or t("msg.eventVcDefaultName", config.guild_language)
         create_kwargs: dict[str, Any] = {
             "category": category,
             "user_limit": max(0, min(99, int(user_limit))),
@@ -1356,17 +1393,19 @@ class SessionManager:
             if scheduled.id is not None:
                 await self.config_repo.update_scheduled_vc_start_result(scheduled.id, channel_id=channel.id, status="active")
 
-        embed = discord.Embed(
-            title="Web VCが作成されました",
-            description=f"**{channel.name}** がWebダッシュボードから作成されました。",
-            color=discord.Color.green(),
+        embed = build_embed(
+            config.guild_language,
+            "embed.web_vc_created.title",
+            "embed.web_vc_created.description",
+            color=COLOR_SUCCESS,
+            description_fmt={"channel": channel.name},
         )
         if normalized_type == "personal":
-            embed.add_field(name="所有者", value=f"<@{owner_user_id}>", inline=True)
+            embed.add_field(name=t("field.owner", config.guild_language), value=f"<@{owner_user_id}>", inline=True)
         if end_at is not None:
-            embed.add_field(name="終了予定", value=discord.utils.format_dt(end_at, style="F"), inline=True)
+            embed.add_field(name=t("field.scheduledEnd", config.guild_language), value=discord.utils.format_dt(end_at, style="F"), inline=True)
         if description.strip():
-            embed.add_field(name="説明", value=description.strip()[:1024], inline=False)
+            embed.add_field(name=t("field.description", config.guild_language), value=description.strip()[:1024], inline=False)
         await self._send_embed(channel, embed)
         notice_channel = await self._resolve_notice_channel(guild.id)
         if notice_channel is not None:
@@ -1445,15 +1484,21 @@ class SessionManager:
     async def _start_scheduled_vc(self, scheduled: ScheduledVC) -> None:
         if scheduled.id is None:
             return
+        config = self.guild_configs.get(scheduled.guild_id)
+        locale = config.guild_language if config else None
         guild = self._resolve_guild(scheduled.guild_id)
         if guild is None:
             await self.config_repo.update_scheduled_vc_status(scheduled.id, "failed")
-            await self._publish_scheduled_vc_notification("error", "予約VCの作成エラー", "サーバーが見つかりません。", scheduled)
+            await self._publish_scheduled_vc_notification(
+                "error", t("scheduled.error.createTitle", locale), t("scheduled.error.guildNotFound", locale), scheduled
+            )
             return
         category = guild.get_channel(scheduled.category_id) if scheduled.category_id is not None else None
         if scheduled.category_id is not None and not isinstance(category, discord.CategoryChannel):
             await self.config_repo.update_scheduled_vc_status(scheduled.id, "failed")
-            await self._publish_scheduled_vc_notification("error", "予約VCの作成エラー", "設定されたカテゴリが利用できません。", scheduled)
+            await self._publish_scheduled_vc_notification(
+                "error", t("scheduled.error.createTitle", locale), t("scheduled.error.categoryUnavailable", locale), scheduled
+            )
             return
         try:
             create_kwargs: dict[str, Any] = {
@@ -1466,12 +1511,16 @@ class SessionManager:
             channel = await guild.create_voice_channel(scheduled.vc_name, **create_kwargs)
         except discord.Forbidden:
             await self.config_repo.update_scheduled_vc_status(scheduled.id, "failed")
-            await self._publish_scheduled_vc_notification("permission_denied", "予約VCの権限がありません", "Botに予約VCを作成する権限がありません。", scheduled)
+            await self._publish_scheduled_vc_notification(
+                "permission_denied", t("scheduled.error.permissionTitle", locale), t("scheduled.error.createPermission", locale), scheduled
+            )
             return
         except discord.HTTPException:
             self.logger.exception("scheduled VC create failed: scheduled_id=%s", scheduled.id)
             await self.config_repo.update_scheduled_vc_status(scheduled.id, "failed")
-            await self._publish_scheduled_vc_notification("error", "予約VCの作成エラー", "予約VCの作成に失敗しました。", scheduled)
+            await self._publish_scheduled_vc_notification(
+                "error", t("scheduled.error.createTitle", locale), t("scheduled.error.createFailed", locale), scheduled
+            )
             return
 
         self.auto_personal_root_channels.discard(channel.id)
@@ -1480,20 +1529,28 @@ class SessionManager:
         if scheduled.repeat_mode != "none":
             await self._create_next_scheduled_occurrence(scheduled)
 
-        description = scheduled.description.strip() or "予約VCの準備ができました。"
+        description = scheduled.description.strip() or t("scheduled.defaultDescription", locale)
         if scheduled.end_at is not None:
-            description += f"\n終了予定: {discord.utils.format_dt(scheduled.end_at, style='F')}"
-        embed = discord.Embed(title=f"予約VCを開始しました: {scheduled.vc_name}", description=description, color=discord.Color.green())
+            description += t("scheduled.endAtSuffix", locale, time=discord.utils.format_dt(scheduled.end_at, style="F"))
+        embed = build_embed(
+            locale,
+            "embed.scheduled_vc_started.title",
+            color=COLOR_SUCCESS,
+            title_fmt={"name": scheduled.vc_name},
+        )
+        embed.description = description
         await self._send_scheduled_vc_message(channel, scheduled, embed)
         notice_channel = await self._resolve_notice_channel(scheduled.guild_id)
         if notice_channel is not None:
             await self._send_scheduled_vc_message(notice_channel, scheduled, embed)
         await self._send_scheduled_vc_dms(scheduled, embed)
-        await self._record_scheduled_vc_timeline(scheduled, channel, "scheduled_vc_created", f"予約VC {scheduled.vc_name} が作成されました。")
+        await self._record_scheduled_vc_timeline(
+            scheduled, channel, "scheduled_vc_created", t("scheduled.notif.startedDesc", locale, name=scheduled.vc_name)
+        )
         await self._publish_scheduled_vc_notification(
             "scheduled_vc_started",
-            "予約VCを開始しました",
-            f"{scheduled.vc_name} を作成しました。",
+            t("scheduled.notif.startedTitle", locale),
+            t("scheduled.notif.startedDesc", locale, name=scheduled.vc_name),
             scheduled,
             channel_id=channel.id,
         )
@@ -1501,6 +1558,8 @@ class SessionManager:
     async def _process_active_scheduled_vc(self, scheduled: ScheduledVC, now: datetime) -> None:
         if scheduled.id is None or scheduled.end_at is None or scheduled.created_channel_id is None:
             return
+        config = self.guild_configs.get(scheduled.guild_id)
+        locale = config.guild_language if config else None
         channel = self._resolve_voice_channel(scheduled.created_channel_id)
         if channel is None:
             await self.config_repo.update_scheduled_vc_status(scheduled.id, "completed")
@@ -1508,10 +1567,13 @@ class SessionManager:
         remaining = int((scheduled.end_at - now).total_seconds())
         for minutes, already_sent in ((15, scheduled.pre_notice_15_sent), (5, scheduled.pre_notice_5_sent), (3, scheduled.pre_notice_3_sent)):
             if not already_sent and 0 < remaining <= minutes * 60:
-                embed = discord.Embed(
-                    title=f"予約VCは{minutes}分後に終了します",
-                    description=f"**{scheduled.vc_name}** はまもなく終了します。",
-                    color=discord.Color.orange(),
+                embed = build_embed(
+                    locale,
+                    "embed.scheduled_vc_ending.title",
+                    "embed.scheduled_vc_ending.description",
+                    color=COLOR_WARNING,
+                    title_fmt={"minutes": minutes},
+                    description_fmt={"name": scheduled.vc_name},
                 )
                 await self._send_embed(channel, embed)
                 await self.config_repo.mark_scheduled_vc_pre_notice(scheduled.id, minutes)
@@ -1523,17 +1585,21 @@ class SessionManager:
         try:
             await channel.delete(reason="予約VCの終了時刻に到達")
         except discord.Forbidden:
-            await self._publish_scheduled_vc_notification("permission_denied", "予約VCの権限がありません", "Botに予約VCを削除する権限がありません。", scheduled, channel_id=channel.id)
+            await self._publish_scheduled_vc_notification(
+                "permission_denied", t("scheduled.error.permissionTitle", locale), t("scheduled.error.deletePermission", locale), scheduled, channel_id=channel.id
+            )
             return
         except discord.HTTPException:
             self.logger.exception("scheduled VC delete failed: scheduled_id=%s", scheduled.id)
-            await self._publish_scheduled_vc_notification("error", "予約VCの削除エラー", "予約VCの削除に失敗しました。", scheduled, channel_id=channel.id)
+            await self._publish_scheduled_vc_notification(
+                "error", t("scheduled.error.deleteTitle", locale), t("scheduled.error.deleteFailed", locale), scheduled, channel_id=channel.id
+            )
             return
         await self.config_repo.update_scheduled_vc_status(scheduled.id, "completed")
         await self._publish_scheduled_vc_notification(
             "scheduled_vc_ended",
-            "予約VCが終了しました",
-            f"{scheduled.vc_name} が終了しました。",
+            t("scheduled.notif.endedTitle", locale),
+            t("scheduled.notif.endedDesc", locale, name=scheduled.vc_name),
             scheduled,
             channel_id=channel.id,
         )
@@ -1542,6 +1608,8 @@ class SessionManager:
         if scheduled.id is None:
             return
         if scheduled.created_channel_id is not None:
+            config = self.guild_configs.get(scheduled.guild_id)
+            locale = config.guild_language if config else None
             channel = self._resolve_voice_channel(scheduled.created_channel_id)
             if channel is not None:
                 session = self.sessions.get(channel.id)
@@ -1552,8 +1620,8 @@ class SessionManager:
                 except discord.Forbidden:
                     await self._publish_scheduled_vc_notification(
                         "permission_denied",
-                        "予約VCの削除権限がありません",
-                        "Botに予約VCチャンネルを削除する権限がありません。",
+                        t("scheduled.error.deletePermissionTitle", locale),
+                        t("scheduled.error.deletePermission", locale),
                         scheduled,
                         channel_id=channel.id,
                     )
@@ -1606,24 +1674,27 @@ class SessionManager:
             participant.apply_voice_state(voice_state)
             session.participants[member.id] = participant
             session.member_order.append(member.id)
-        start_embed = self._build_start_embed(session, starter, management_url)
+        locale = config.guild_language
+        start_embed = self._build_start_embed(session, starter, management_url, locale)
         start_view = self._build_management_link_view(management_url)
         await self._send_embed(channel, start_embed, view=start_view)
         from vc_control.team_ui import TeamPanelView
 
         await self._send_embed(
             channel,
-            self._build_management_panel_embed(session, management_url),
+            self._build_management_panel_embed(session, management_url, locale),
             view=TeamPanelView(self, session.root_channel_id, management_url=management_url),
         )
         await self._send_notification_message(session, start_embed, view=start_view)
         if not suppressed:
             await self._send_embed(
                 channel,
-                discord.Embed(
-                    title="入室通知",
-                    description=f"{starter.mention} が通話に参加しました。",
-                    color=discord.Color.green(),
+                build_embed(
+                    locale,
+                    "embed.member_joined.title",
+                    "embed.member_joined.description",
+                    color=COLOR_SUCCESS,
+                    description_fmt={"mention": starter.mention},
                 ),
             )
         await self._persist_and_broadcast(session)
@@ -1646,8 +1717,8 @@ class SessionManager:
             )
         await self._publish_important_event(
             "vc_started",
-            "VC開始",
-            f"{session.root_channel_name} が開始されました。",
+            t("event.title.vcStarted", locale),
+            t("event.vcStartedDesc", locale, channel=session.root_channel_name),
             session,
         )
 
@@ -1685,12 +1756,15 @@ class SessionManager:
         participant.apply_voice_state(state)
         await self._cancel_empty_cleanup(channel)
         if not suppressed:
+            config = self.guild_configs.get(session.guild_id)
             await self._send_embed(
                 channel,
-                discord.Embed(
-                    title="入室通知",
-                    description=f"{member.mention} が通話に参加しました。",
-                    color=discord.Color.green(),
+                build_embed(
+                    config.guild_language if config else None,
+                    "embed.member_joined.title",
+                    "embed.member_joined.description",
+                    color=COLOR_SUCCESS,
+                    description_fmt={"mention": member.mention},
                 ),
             )
         await self._persist_and_broadcast(session)
@@ -1725,13 +1799,17 @@ class SessionManager:
         participant.user_name = member.display_name
         participant.apply_voice_state(None)
 
+        config = self.guild_configs.get(session.guild_id)
+        locale = config.guild_language if config else None
         if not suppressed:
             await self._send_embed(
                 channel,
-                discord.Embed(
-                    title="退出通知",
-                    description=f"{member.mention} が通話から退出しました。",
-                    color=discord.Color.red(),
+                build_embed(
+                    locale,
+                    "embed.member_left.title",
+                    "embed.member_left.description",
+                    color=COLOR_ERROR,
+                    description_fmt={"mention": member.mention},
                 ),
             )
 
@@ -1742,10 +1820,12 @@ class SessionManager:
             session.owner_user_name = next_owner.user_name
             await self._send_embed(
                 self._resolve_voice_channel(session.root_channel_id),
-                discord.Embed(
-                    title="セッション管理者変更",
-                    description=f"現在の管理者が退出したため、管理者を <@{next_owner.user_id}> に移譲しました。",
-                    color=discord.Color.orange(),
+                build_embed(
+                    locale,
+                    "embed.owner_changed.title",
+                    "embed.owner_changed.description",
+                    color=COLOR_WARNING,
+                    description_fmt={"mention": f"<@{next_owner.user_id}>"},
                 ),
             )
 
@@ -1797,15 +1877,21 @@ class SessionManager:
         if not before_channel.members:
             await self._schedule_empty_cleanup(before_channel)
         if not suppressed:
-            leave_embed = discord.Embed(
-                title="移動通知",
-                description=f"{member.mention} が **{before_channel.name}** から移動しました。",
-                color=discord.Color.red(),
+            config = self.guild_configs.get(session.guild_id)
+            locale = config.guild_language if config else None
+            leave_embed = build_embed(
+                locale,
+                "embed.member_moved_leave.title",
+                "embed.member_moved_leave.description",
+                color=COLOR_ERROR,
+                description_fmt={"mention": member.mention, "channel": before_channel.name},
             )
-            join_embed = discord.Embed(
-                title="移動通知",
-                description=f"{member.mention} が **{after_channel.name}** に参加しました。",
-                color=discord.Color.green(),
+            join_embed = build_embed(
+                locale,
+                "embed.member_moved_join.title",
+                "embed.member_moved_join.description",
+                color=COLOR_SUCCESS,
+                description_fmt={"mention": member.mention, "channel": after_channel.name},
             )
             await self._send_embed(before_channel, leave_embed)
             await self._send_embed(after_channel, join_embed)
@@ -1876,7 +1962,9 @@ class SessionManager:
             self.logger.exception("セッションスナップショット削除に失敗しました: session_key=%s", session.session_key)
         await self._delete_notification_message(session)
         session.notice_message_id = None
-        end_embed = self._build_end_embed(session, completed)
+        config = self.guild_configs.get(session.guild_id)
+        locale = config.guild_language if config else None
+        end_embed = self._build_end_embed(session, completed, locale)
         await self._send_notification_message(session, end_embed)
         await self._record_timeline_event(
             session,
@@ -1886,8 +1974,8 @@ class SessionManager:
         )
         await self._publish_important_event(
             "vc_ended",
-            "VC終了",
-            f"{session.root_channel_name} が終了しました。",
+            t("event.title.vcEnded", locale),
+            t("event.vcEndedDesc", locale, channel=session.root_channel_name),
             session,
             extra_payload={"total_talk_seconds": total_talk, "total_afk_seconds": total_afk},
         )
@@ -1924,13 +2012,16 @@ class SessionManager:
         root_id = self.channel_to_root.get(message.channel.id)
         if root_id is None:
             return
+        config = self.guild_configs.get(message.channel.guild.id)
+        locale = config.guild_language if config else None
         if message.mention_everyone:
             await self._send_embed(
                 message.channel,
-                discord.Embed(
-                    title="警告",
-                    description="@everyone / @here のDM転送は行いません。",
-                    color=discord.Color.red(),
+                build_embed(
+                    locale,
+                    "embed.everyone_mention_warning.title",
+                    "embed.everyone_mention_warning.description",
+                    color=COLOR_ERROR,
                 ),
             )
             return
@@ -1939,10 +2030,16 @@ class SessionManager:
                 continue
             try:
                 await user.send(
-                    embed=discord.Embed(
-                        title="VCメンション通知",
-                        description=f"{message.author.mention} さんから {message.channel.mention} でメンションされました。\n\n{message.content}",
-                        color=discord.Color.blue(),
+                    embed=build_embed(
+                        locale,
+                        "embed.vc_mention.title",
+                        "embed.vc_mention.description",
+                        color=BRAND_BLUE,
+                        description_fmt={
+                            "author": message.author.mention,
+                            "channel": message.channel.mention,
+                            "content": message.content,
+                        },
                     )
                 )
             except discord.Forbidden:
@@ -2102,9 +2199,11 @@ class SessionManager:
     ) -> str:
         session = self.sessions.get(root_channel_id)
         if session is None:
-            raise ValueError("セッションが見つかりません。")
+            raise ValueError(t("msg.sessionNotFound", None))
+        config = self.guild_configs.get(session.guild_id)
+        locale = config.guild_language if config else None
         if not await self.can_edit_session(session, actor_id):
-            raise PermissionError("アクセス制御の変更権限がありません。")
+            raise PermissionError(t("msg.noPermissionAccessControl", locale))
         mode = access_mode if access_mode in {"public", "invite", "role"} else "public"
         old_invited = set(session.invited_user_ids)
         old_roles = set(session.access_role_ids)
@@ -2117,7 +2216,7 @@ class SessionManager:
         session.invited_user_ids = final_invited if mode == "invite" else set()
         session.access_role_ids = final_roles if mode == "role" else set()
         await self._persist_and_broadcast(session)
-        mode_label = ACCESS_MODE_LABELS.get(mode, mode)
+        mode_label = _access_mode_label(mode, locale)
         await self._record_timeline_event(
             session,
             "access_changed",
@@ -2132,17 +2231,17 @@ class SessionManager:
         )
         await self._publish_important_event(
             "access_changed",
-            "VCアクセスが変更されました",
-            f"{session.root_channel_name} のアクセスモードが{mode_label}に変更されました。",
+            t("event.title.accessChanged", locale),
+            t("event.accessChangedDesc", locale, channel=session.root_channel_name, mode=mode_label),
             session,
             extra_payload={"access_mode": mode},
         )
-        return f"アクセスモードを{mode_label}に更新しました。"
+        return t("msg.accessModeUpdated", locale, mode=mode_label)
 
     async def add_invited_users(self, root_channel_id: int, actor_id: int, user_ids: list[str]) -> str:
         session = self.sessions.get(root_channel_id)
         if session is None:
-            raise ValueError("セッションが見つかりません。")
+            raise ValueError(t("msg.sessionNotFound", None))
         merged = sorted(session.invited_user_ids | {str(item).strip() for item in user_ids if str(item).strip().isdigit()})
         return await self.update_access_control(root_channel_id, actor_id, access_mode="invite", invited_user_ids=merged)
 
@@ -2169,14 +2268,16 @@ class SessionManager:
     ) -> str:
         session = self.sessions.get(root_channel_id)
         if session is None:
-            raise ValueError("セッションが見つかりません。")
+            raise ValueError(t("msg.sessionNotFound", None))
+        config = self.guild_configs.get(session.guild_id)
+        locale = config.guild_language if config else None
         participant = session.participants.get(target_user_id)
         if participant is None:
-            raise ValueError("対象ユーザーが見つかりません。")
+            raise ValueError(t("msg.targetUserNotFound", locale))
         if target_user_id != actor_id and not await self.can_assign_others(session, actor_id):
-            raise PermissionError("他ユーザーのチーム変更権限がありません。")
+            raise PermissionError(t("msg.noPermissionAssignOthers", locale))
         if team_name and team_name not in session.team_names:
-            raise ValueError("存在しないチームです。")
+            raise ValueError(t("msg.teamNotExist", locale))
         participant.current_team = team_name
         if team_name is None:
             session.team_assignments.pop(target_user_id, None)
@@ -2196,7 +2297,7 @@ class SessionManager:
             "team_changed",
             {"user_id": str(target_user_id), "team_name": team_name},
         )
-        return f"<@{target_user_id}> を {team_name or '未所属'} に設定しました。"
+        return t("msg.teamAssignedTo", locale, userId=target_user_id, team=team_name or t("common.unassigned", locale))
 
     async def update_team_settings(
         self,
@@ -2207,12 +2308,14 @@ class SessionManager:
     ) -> None:
         session = self.sessions.get(root_channel_id)
         if session is None:
-            raise ValueError("セッションが見つかりません。")
+            raise ValueError(t("msg.sessionNotFound", None))
         if not await self.can_assign_others(session, actor_id):
-            raise PermissionError("チーム設定の変更権限がありません。")
+            config = self.guild_configs.get(session.guild_id)
+            raise PermissionError(t("msg.noPermissionTeamSettings", config.guild_language if config else None))
         normalized = [name.strip() for name in team_names if name.strip()]
         if not normalized:
-            raise ValueError("少なくとも1つのチーム名が必要です。")
+            config = self.guild_configs.get(session.guild_id)
+            raise ValueError(t("msg.teamNamesRequired", config.guild_language if config else None))
         session.team_names = normalized
         session.team_mode = team_mode
         for user_id, current_team in list(session.team_assignments.items()):
@@ -2227,13 +2330,15 @@ class SessionManager:
     async def split_teams(self, root_channel_id: int, actor_id: int) -> list[str]:
         session = self.sessions.get(root_channel_id)
         if session is None:
-            raise ValueError("セッションが見つかりません。")
+            raise ValueError(t("msg.sessionNotFound", None))
+        config = self.guild_configs.get(session.guild_id)
+        locale = config.guild_language if config else None
         if not await self.can_execute_team_actions(session, actor_id):
-            raise PermissionError("分割権限がありません。")
+            raise PermissionError(t("msg.noPermissionSplit", locale))
         guild = self._resolve_guild(session.guild_id)
         root_channel = self._resolve_voice_channel(session.root_channel_id)
         if guild is None or root_channel is None:
-            raise ValueError("Discord上のチャンネルを解決できません。")
+            raise ValueError(t("msg.channelUnresolvable", locale))
         moved_messages: list[str] = []
         async with session.lock:
             for team_name in session.team_names:
@@ -2265,19 +2370,21 @@ class SessionManager:
                 moved_messages.append(f"{team_name}: {names}")
                 await self._send_embed(
                     team_channel,
-                    discord.Embed(
-                        title="チーム移動",
-                        description=f"{names} を **{team_name}** へ移動しました。",
-                        color=discord.Color.blue(),
+                    build_embed(
+                        locale,
+                        "embed.team_moved.title",
+                        "embed.team_moved.description",
+                        color=BRAND_BLUE,
+                        description_fmt={"names": names, "team": team_name},
                     ),
                 )
             if moved_messages:
                 await self._send_embed(
                     root_channel,
                     discord.Embed(
-                        title="チーム分割完了",
+                        title=t("embed.teams_split.title", locale),
                         description="\n".join(moved_messages),
-                        color=discord.Color.blue(),
+                        color=BRAND_BLUE,
                     ),
                 )
             await self._persist_and_broadcast(session)
@@ -2296,13 +2403,15 @@ class SessionManager:
     async def assemble_teams(self, root_channel_id: int, actor_id: int) -> list[str]:
         session = self.sessions.get(root_channel_id)
         if session is None:
-            raise ValueError("セッションが見つかりません。")
+            raise ValueError(t("msg.sessionNotFound", None))
+        config = self.guild_configs.get(session.guild_id)
+        locale = config.guild_language if config else None
         if not await self.can_execute_team_actions(session, actor_id):
-            raise PermissionError("集合権限がありません。")
+            raise PermissionError(t("msg.noPermissionAssemble", locale))
         guild = self._resolve_guild(session.guild_id)
         root_channel = self._resolve_voice_channel(session.root_channel_id)
         if guild is None or root_channel is None:
-            raise ValueError("Discord上のチャンネルを解決できません。")
+            raise ValueError(t("msg.channelUnresolvable", locale))
         moved_users: list[str] = []
         async with session.lock:
             for participant in session.active_participants():
@@ -2322,10 +2431,12 @@ class SessionManager:
             if moved_users:
                 await self._send_embed(
                     root_channel,
-                    discord.Embed(
-                        title="集合完了",
-                        description=f"{', '.join(moved_users)} をメインVCへ戻しました。",
-                        color=discord.Color.gold(),
+                    build_embed(
+                        locale,
+                        "embed.teams_assembled.title",
+                        "embed.teams_assembled.description",
+                        color=COLOR_NOTIFY,
+                        description_fmt={"names": ", ".join(moved_users)},
                     ),
                 )
             await self._persist_and_broadcast(session)
@@ -2341,28 +2452,30 @@ class SessionManager:
     async def recall_member(self, root_channel_id: int, actor_id: int, target_user_id: int) -> str:
         session = self.sessions.get(root_channel_id)
         if session is None:
-            raise ValueError("セッションが見つかりません。")
+            raise ValueError(t("msg.sessionNotFound", None))
+        config = self.guild_configs.get(session.guild_id)
+        locale = config.guild_language if config else None
         if not await self.can_execute_team_actions(session, actor_id):
-            raise PermissionError("呼び戻し権限がありません。")
+            raise PermissionError(t("msg.noPermissionRecall", locale))
         guild = self._resolve_guild(session.guild_id)
         root_channel = self._resolve_voice_channel(session.root_channel_id)
         if guild is None or root_channel is None:
-            raise ValueError("Discord上のチャンネルを解決できません。")
+            raise ValueError(t("msg.channelUnresolvable", locale))
         participant = session.participants.get(target_user_id)
         member = guild.get_member(target_user_id) if guild else None
         if participant is None or member is None or member.voice is None or member.voice.channel is None:
-            raise ValueError("対象ユーザーが現在通話にいません。")
+            raise ValueError(t("msg.targetNotInVoice", locale))
         self._mark_system_move(participant.user_id, member.voice.channel.id, root_channel.id, "team_recall")
         try:
             await member.move_to(root_channel, reason="個別呼び戻し")
         except discord.Forbidden as exc:
-            raise PermissionError("呼び戻し権限がありません。") from exc
+            raise PermissionError(t("msg.noPermissionRecall", locale)) from exc
         except discord.HTTPException as exc:
-            raise ValueError("呼び戻しに失敗しました。") from exc
-        message = f"<@{target_user_id}> をメインVCへ呼び戻しました。"
+            raise ValueError(t("msg.recallFailed", locale)) from exc
+        message = t("msg.recalledTo", locale, userId=target_user_id)
         await self._send_embed(
             root_channel,
-            discord.Embed(title="呼び戻し", description=message, color=discord.Color.gold()),
+            discord.Embed(title=t("embed.member_recalled.title", locale), description=message, color=COLOR_NOTIFY),
         )
         await self._persist_and_broadcast(session)
         await self._record_timeline_event(
@@ -2632,14 +2745,13 @@ class SessionManager:
         channel = self._resolve_voice_channel(session.root_channel_id)
         if channel is None:
             return
-        title = "ソロVC削除警告" if warning else "ソロVCへの招待提案"
-        description = (
-            f"{member.mention} さんがしばらく **{channel.name}** に1人でいます。\n"
-            "他のユーザーをメンションして招待することを検討してください。"
-        )
+        config = self.guild_configs.get(session.guild_id)
+        locale = config.guild_language if config else None
+        title_key = "embed.solo_warning.title" if warning else "embed.solo_notice.title"
+        description = t("embed.solo_notice.description", locale, mention=member.mention, channel=channel.name)
         if warning:
-            description += "\nこのままソロの状態が続くと、このVCは自動的に削除されます。"
-        embed = discord.Embed(title=title, description=description, color=discord.Color.red() if warning else discord.Color.orange())
+            description += t("embed.solo_warning.suffix", locale)
+        embed = discord.Embed(title=t(title_key, locale), description=description, color=COLOR_ERROR if warning else COLOR_WARNING)
         await self._send_embed(channel, embed)
         await self._send_solo_cleanup_dm(session, embed)
 
@@ -2694,10 +2806,12 @@ class SessionManager:
                 handle.notice_sent = True
                 await self._send_embed(
                     refreshed,
-                    discord.Embed(
-                        title="削除予告",
-                        description=f"{config.final_delete_sec}秒後まで空室ならVCを削除します。",
-                        color=discord.Color.orange(),
+                    build_embed(
+                        config.guild_language,
+                        "embed.delete_notice.title",
+                        "embed.delete_notice.description",
+                        color=COLOR_WARNING,
+                        description_fmt={"seconds": config.final_delete_sec},
                     ),
                 )
                 await asyncio.sleep(max(0, config.final_delete_sec - config.first_empty_notice_sec))
@@ -2731,12 +2845,14 @@ class SessionManager:
             return
         handle.task.cancel()
         if handle.notice_sent:
+            config = self.guild_configs.get(channel.guild.id)
             await self._send_embed(
                 channel,
-                discord.Embed(
-                    title="削除キャンセル",
-                    description="再入室を検知したため、自動削除をキャンセルしました。",
-                    color=discord.Color.green(),
+                build_embed(
+                    config.guild_language if config else None,
+                    "embed.delete_cancelled.title",
+                    "embed.delete_cancelled.description",
+                    color=COLOR_SUCCESS,
                 ),
             )
 
@@ -2815,6 +2931,7 @@ class SessionManager:
         user_name: str | None = None,
         payload: dict[str, Any] | None = None,
     ) -> None:
+        locale = self.guild_configs.get(session.guild_id).guild_language if self.guild_configs.get(session.guild_id) else None
         try:
             event = await self.stats_repo.record_timeline_event(
                 session_id=session.session_id,
@@ -2823,7 +2940,7 @@ class SessionManager:
                 root_channel_id=str(session.root_channel_id),
                 root_channel_name=session.root_channel_name,
                 event_type=event_type,
-                event_label=TIMELINE_EVENT_LABELS.get(event_type, event_type),
+                event_label=_timeline_label(event_type, locale),
                 user_id=str(user_id) if user_id is not None else None,
                 user_name=user_name,
                 message=message,

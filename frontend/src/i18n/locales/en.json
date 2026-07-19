@@ -292,6 +292,9 @@
     "recentSessionsHeading": "Recent history",
     "recentSessionsEmpty": "No session history.",
     "errorLogsEmpty": "No error logs.",
-    "selectServerPrompt": "Select a server"
+    "selectServerPrompt": "Select a server",
+    "guildLanguageHeading": "Server language (Discord)",
+    "saveSuccess": "Saved server settings.",
+    "rankingPostSuccess": "Posted the ranking."
   }
 }

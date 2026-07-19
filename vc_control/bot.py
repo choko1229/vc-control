@@ -7,8 +7,10 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
+from vc_control.embeds import BRAND_BLUE, build_embed
+from vc_control.i18n import t
 from vc_control.runtime import SessionManager
-from vc_control.team_ui import TeamPanelView
+from vc_control.team_ui import TeamPanelView, _locale_for
 
 
 def _read_sync_guild_ids() -> list[int]:
@@ -36,21 +38,22 @@ class TeamCog(commands.Cog):
     async def team(self, interaction: discord.Interaction) -> None:
         member = interaction.user
         if not isinstance(member, discord.Member):
-            await interaction.response.send_message("サーバー内で実行してください。", ephemeral=True)
+            await interaction.response.send_message(t("bot.msg.mustRunInServer", None), ephemeral=True)
             return
+        locale = _locale_for(self.bot.session_manager, member.guild.id)
         if member.voice is None or member.voice.channel is None:
-            await interaction.response.send_message("VCに参加してから実行してください", ephemeral=True)
+            await interaction.response.send_message(t("bot.msg.mustJoinVcFirst", locale), ephemeral=True)
             return
 
         voice_session = self.bot.session_manager.get_session_by_channel(int(member.voice.channel.id))
         if voice_session is None:
-            await interaction.response.send_message("このVCは管理対象セッションではありません。", ephemeral=True)
+            await interaction.response.send_message(t("bot.msg.notManagedSession", locale), ephemeral=True)
             return
 
         command_channel_id = int(interaction.channel_id or 0)
         command_session = self.bot.session_manager.get_session_by_channel(command_channel_id)
         if command_session is None or command_session.session_key != voice_session.session_key:
-            await interaction.response.send_message("管理対象VCのテキスト欄で実行してください。", ephemeral=True)
+            await interaction.response.send_message(t("bot.msg.mustRunInManagedText", locale), ephemeral=True)
             return
 
         await self.bot.session_manager.set_panel_creator(voice_session.root_channel_id, member)
@@ -66,17 +69,19 @@ class TeamCog(commands.Cog):
             voice_session.session_key,
         )
 
-        embed = discord.Embed(
-            title="チーム管理パネル",
-            description=(
-                f"メインVC: **{voice_session.root_channel_name}**\n"
-                f"開始ユーザー: <@{voice_session.starter_user_id}>\n"
-                f"現在の管理者: <@{voice_session.owner_user_id}>\n"
-                f"チーム: {', '.join(voice_session.team_names)}"
-            ),
-            color=discord.Color.blue(),
+        embed = build_embed(
+            locale,
+            "embed.team_panel.title",
+            "embed.team_panel.description",
+            color=BRAND_BLUE,
+            description_fmt={
+                "channel": voice_session.root_channel_name,
+                "starter": f"<@{voice_session.starter_user_id}>",
+                "owner": f"<@{voice_session.owner_user_id}>",
+                "teams": ", ".join(voice_session.team_names),
+            },
         )
-        embed.add_field(name="VC管理", value=management_url or "未設定", inline=False)
+        embed.add_field(name=t("field.management", locale), value=management_url or t("common.notSet", locale), inline=False)
 
         await interaction.response.send_message(
             embed=embed,

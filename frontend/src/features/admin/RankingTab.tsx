@@ -132,7 +132,7 @@ export function RankingTab({ guildId }: { guildId: string }) {
           loading={postNow.isPending}
           onClick={() =>
             postNow.mutate(undefined, {
-              onSuccess: (result) => show('success', t('common.save'), result.message),
+              onSuccess: (result) => show('success', t('common.save'), t(result.messageKey as never)),
               onError: (error) => show('danger', t('voice.saveError'), error.message),
             })
           }

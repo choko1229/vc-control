@@ -1081,6 +1081,7 @@ def create_app(container: AppContainer) -> FastAPI:
         "team_mode",
         "team_names",
         "enabled",
+        "guild_language",
     )
 
     @app.get("/api/admin/settings")
@@ -1217,13 +1218,14 @@ def create_app(container: AppContainer) -> FastAPI:
             team_mode=str(payload.get("team_mode", base_config.team_mode)).strip() or base_config.team_mode,
             team_names=[name.strip() for name in str(payload.get("team_names", ",".join(base_config.team_names))).split(",") if name.strip()],
             enabled=bool(payload.get("enabled", base_config.enabled)),
+            guild_language=str(payload.get("guild_language", base_config.guild_language)).strip() or base_config.guild_language,
         )
         await container.config_repo.upsert_guild_config(config)
         await container.session_manager.refresh_guild_configs()
         return JSONResponse(
             {
                 "ok": True,
-                "message": "サーバー設定を保存しました。",
+                "messageKey": "admin.saveSuccess",
                 "diagnostics": _build_guild_diagnostics(container, guild_id, config),
                 "config": {
                     "managed_category_id": config.managed_category_id,
@@ -1243,6 +1245,7 @@ def create_app(container: AppContainer) -> FastAPI:
                     "team_mode": config.team_mode,
                     "team_names": config.team_names,
                     "enabled": config.enabled,
+                    "guild_language": config.guild_language,
                 },
             }
         )
@@ -1253,7 +1256,7 @@ def create_app(container: AppContainer) -> FastAPI:
         sent = await container.session_manager.post_activity_rankings(guild_id, frequency="manual")
         if not sent:
             raise HTTPException(status_code=400, detail="Ranking post failed. Check ranking channel settings and bot permissions.")
-        return JSONResponse({"ok": True, "message": "ランキングを手動投稿しました。"})
+        return JSONResponse({"ok": True, "messageKey": "admin.rankingPostSuccess"})
 
     @app.get("/api/me")
     async def api_me(request: Request) -> JSONResponse:

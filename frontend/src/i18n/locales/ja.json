@@ -292,6 +292,9 @@
     "recentSessionsHeading": "最近の履歴",
     "recentSessionsEmpty": "セッション履歴はありません。",
     "errorLogsEmpty": "エラーログはありません。",
-    "selectServerPrompt": "サーバーを選択してください"
+    "selectServerPrompt": "サーバーを選択してください",
+    "guildLanguageHeading": "サーバーの言語(Discord)",
+    "saveSuccess": "サーバー設定を保存しました。",
+    "rankingPostSuccess": "ランキングを手動投稿しました。"
   }
 }

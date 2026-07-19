@@ -32,6 +32,7 @@ export interface GuildConfigData {
   team_mode: string
   team_names: string[]
   enabled: boolean
+  guild_language: string
 }
 
 export interface Diagnostic {
@@ -98,7 +99,7 @@ export function useUpdateAdminGuildSettings(guildId: string) {
 
 export function usePostRankingNow(guildId: string) {
   return useMutation({
-    mutationFn: () => api.post<{ ok: true; message: string }>(`/api/admin/guilds/${guildId}/rankings/post`),
+    mutationFn: () => api.post<{ ok: true; messageKey: string }>(`/api/admin/guilds/${guildId}/rankings/post`),
   })
 }
 

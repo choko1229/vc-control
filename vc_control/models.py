@@ -45,6 +45,7 @@ class GuildConfig:
     team_mode: str = "custom"
     team_names: list[str] = field(default_factory=lambda: DEFAULT_TEAM_NAMES.copy())
     enabled: bool = False
+    guild_language: str = "ja"
     updated_at: datetime | None = None
 
     def to_record(self) -> dict[str, Any]:
@@ -69,6 +70,7 @@ class GuildConfig:
             "team_mode": self.team_mode,
             "team_names_json": self.team_names,
             "enabled": int(self.enabled),
+            "guild_language": self.guild_language,
             "updated_at": to_iso(self.updated_at),
         }
 
@@ -95,6 +97,7 @@ class GuildConfig:
             team_mode=str(row["team_mode"]),
             team_names=list(json_loads(row["team_names_json"], DEFAULT_TEAM_NAMES)),
             enabled=bool(row["enabled"]),
+            guild_language=str(row.get("guild_language", "ja")) or "ja",
             updated_at=from_iso(row["updated_at"]),
         )
 

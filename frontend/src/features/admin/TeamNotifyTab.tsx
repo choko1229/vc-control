@@ -15,12 +15,14 @@ export function TeamNotifyTab({ guildId }: { guildId: string }) {
   const [teamMode, setTeamMode] = useState('custom')
   const [teamNames, setTeamNames] = useState('')
   const [notificationChannelId, setNotificationChannelId] = useState('')
+  const [guildLanguage, setGuildLanguage] = useState('ja')
 
   useEffect(() => {
     if (!data) return
     setTeamMode(data.config.team_mode)
     setTeamNames(data.config.team_names.join(','))
     setNotificationChannelId(data.config.notification_channel_id ? String(data.config.notification_channel_id) : '')
+    setGuildLanguage(data.config.guild_language)
   }, [data])
 
   if (!data) return null
@@ -40,6 +42,17 @@ export function TeamNotifyTab({ guildId }: { guildId: string }) {
     event.preventDefault()
     updateGuildSettings.mutate(
       { notification_channel_id: notificationChannelId || null },
+      {
+        onSuccess: () => show('success', t('common.save'), t('voice.saveSuccess')),
+        onError: (error) => show('danger', t('voice.saveError'), error.message),
+      },
+    )
+  }
+
+  function handleLanguageSubmit(event: FormEvent) {
+    event.preventDefault()
+    updateGuildSettings.mutate(
+      { guild_language: guildLanguage },
       {
         onSuccess: () => show('success', t('common.save'), t('voice.saveSuccess')),
         onError: (error) => show('danger', t('voice.saveError'), error.message),
@@ -86,6 +99,24 @@ export function TeamNotifyTab({ guildId }: { guildId: string }) {
                   {channel.name}
                 </option>
               ))}
+            </Select>
+          </div>
+          <Button type="submit" loading={updateGuildSettings.isPending}>
+            {t('common.save')}
+          </Button>
+        </form>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>{t('admin.guildLanguageHeading')}</CardTitle>
+        </CardHeader>
+        <form className="space-y-3" onSubmit={handleLanguageSubmit}>
+          <div>
+            <FieldLabel htmlFor="guild_language">{t('userSettings.languageHeading')}</FieldLabel>
+            <Select id="guild_language" value={guildLanguage} onChange={(event) => setGuildLanguage(event.target.value)}>
+              <option value="ja">{t('userSettings.languageJa')}</option>
+              <option value="en">{t('userSettings.languageEn')}</option>
             </Select>
           </div>
           <Button type="submit" loading={updateGuildSettings.isPending}>
