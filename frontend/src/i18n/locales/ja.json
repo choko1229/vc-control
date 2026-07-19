@@ -1,0 +1,26 @@
+{
+  "common": {
+    "loading": "読み込み中...",
+    "save": "保存",
+    "cancel": "キャンセル",
+    "delete": "削除",
+    "close": "閉じる",
+    "retry": "再試行"
+  },
+  "nav": {
+    "dashboard": "ホーム",
+    "stats": "統計",
+    "rankings": "ランキング",
+    "reservations": "予約",
+    "settings": "設定",
+    "admin": "管理",
+    "logout": "ログアウト"
+  },
+  "auth": {
+    "loginTitle": "Discordでログイン",
+    "loginSubtitle": "Bot Owner はアドミン管理画面へ、VC参加者は自分のVC管理画面へ進めます。",
+    "loginButton": "Discordでログイン",
+    "setupTitle": "初回セットアップ",
+    "errorTitle": "問題が発生しました"
+  }
+}

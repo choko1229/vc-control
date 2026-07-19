@@ -1,0 +1,26 @@
+{
+  "common": {
+    "loading": "Loading...",
+    "save": "Save",
+    "cancel": "Cancel",
+    "delete": "Delete",
+    "close": "Close",
+    "retry": "Retry"
+  },
+  "nav": {
+    "dashboard": "Home",
+    "stats": "Stats",
+    "rankings": "Rankings",
+    "reservations": "Reservations",
+    "settings": "Settings",
+    "admin": "Admin",
+    "logout": "Log out"
+  },
+  "auth": {
+    "loginTitle": "Log in with Discord",
+    "loginSubtitle": "Bot owners go to the admin dashboard; VC participants go to their own VC control page.",
+    "loginButton": "Log in with Discord",
+    "setupTitle": "First-time setup",
+    "errorTitle": "Something went wrong"
+  }
+}

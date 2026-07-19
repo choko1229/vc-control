@@ -1,0 +1,57 @@
+@import "tailwindcss";
+
+@theme {
+  --font-body: "Noto Sans", "Hiragino Sans", "Yu Gothic UI", sans-serif;
+  --font-heading: "Nunito", "Noto Sans", sans-serif;
+
+  --color-brand: #3b82f6;
+  --color-brand-dark: #1d4ed8;
+  --color-brand-tint: #eaf2ff;
+  --color-accent: #ff7a59;
+  --color-accent-tint: #ffe4dc;
+  --color-accent-dark: #c2410c;
+  --color-success: #22c55e;
+  --color-warning: #f59e0b;
+  --color-danger: #ef4444;
+
+  --color-surface-app: #f4f6fb;
+  --color-surface-panel: #ffffff;
+  --color-surface-sunken: #eaeef5;
+  --color-text-primary: #10182b;
+  --color-text-secondary: #52607a;
+  --color-text-muted: #99a3b8;
+  --color-border: #e2e7f0;
+
+  --radius-card: 16px;
+  --radius-pill: 999px;
+  --radius-icon: 14px;
+
+  --shadow-soft: 0 6px 16px rgb(16 24 43 / 0.08);
+}
+
+[data-theme="dark"] {
+  --color-surface-app: #14171f;
+  --color-surface-panel: #1d212c;
+  --color-surface-sunken: #262b38;
+  --color-text-primary: #f2f4f8;
+  --color-text-secondary: #a3adc2;
+  --color-text-muted: #6b7488;
+  --color-border: #2c3140;
+  --shadow-soft: 0 6px 20px rgb(0 0 0 / 0.35);
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  font-family: var(--font-body);
+  background: var(--color-surface-app);
+  color: var(--color-text-primary);
+}
+
+html:lang(ja) {
+  --font-heading: "M PLUS Rounded 1c", "Noto Sans", sans-serif;
+}

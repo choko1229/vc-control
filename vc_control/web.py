@@ -14,7 +14,7 @@ from zoneinfo import ZoneInfo
 import discord
 import httpx
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
 from starlette.templating import Jinja2Templates
@@ -859,6 +859,10 @@ def create_app(container: AppContainer) -> FastAPI:
     session_secret = os.environ.get("SESSION_SECRET_FALLBACK", secrets.token_urlsafe(32))
     app.add_middleware(SessionMiddleware, secret_key=session_secret, same_site="lax")
     app.mount("/static", StaticFiles(directory=str(container.root_dir / "vc_control" / "static")), name="static")
+    spa_dir = container.root_dir / "vc_control" / "static" / "app"
+    spa_assets_dir = spa_dir / "assets"
+    if spa_assets_dir.is_dir():
+        app.mount("/assets", StaticFiles(directory=str(spa_assets_dir)), name="spa-assets")
     app.state.container = container
     app.state.templates = templates
     app.state.ws_secret = session_secret
@@ -916,6 +920,9 @@ def create_app(container: AppContainer) -> FastAPI:
             status_code=status_code,
         )
 
+    def serve_spa() -> Response:
+        return FileResponse(str(spa_dir / "index.html"))
+
     @app.get("/", response_class=HTMLResponse, response_model=None)
     async def index(request: Request) -> Response:
         if not await container.config_repo.is_setup_complete():
@@ -927,19 +934,11 @@ def create_app(container: AppContainer) -> FastAPI:
         destination = "/admin" if _owner_user_id(settings) == profile.user_id else "/dashboard/me"
         return RedirectResponse(destination, status_code=302)
 
-    @app.get("/setup", response_class=HTMLResponse, response_model=None)
+    @app.get("/setup", response_model=None)
     async def setup_page(request: Request) -> Response:
         if await container.config_repo.is_setup_complete():
             raise HTTPException(status_code=404, detail="初回セットアップは無効です。")
-        return render(
-            request,
-            "setup.html",
-            {
-                "title": "初回セットアップ",
-                "default_dashboard_host": _default_dashboard_host(),
-                "default_dashboard_port": _default_dashboard_port(),
-            },
-        )
+        return serve_spa()
 
     @app.post("/setup", response_model=None)
     async def submit_setup(request: Request) -> Response:
@@ -963,7 +962,7 @@ def create_app(container: AppContainer) -> FastAPI:
         await container.config_repo.save_initial_setup(payload, secrets.token_urlsafe(32))
         return RedirectResponse("/login?setup=1", status_code=302)
 
-    @app.get("/login", response_class=HTMLResponse, response_model=None)
+    @app.get("/login", response_model=None)
     async def login_page(request: Request) -> Response:
         if not await container.config_repo.is_setup_complete():
             return RedirectResponse("/setup", status_code=302)
@@ -972,22 +971,7 @@ def create_app(container: AppContainer) -> FastAPI:
         if profile is not None:
             destination = "/admin" if _owner_user_id(settings) == profile.user_id else "/dashboard/me"
             return RedirectResponse(destination, status_code=302)
-        error = None
-        config_error = _oauth_config_error(settings)
-        if config_error:
-            error = f"OAuth設定が未完了です。{config_error}"
-        elif request.query_params.get("oauth_error"):
-            error = "OAuth設定が不足しているためログインを開始できません。Redirect URI と Discord Developer Portal の設定も確認してください。"
-        return render(
-            request,
-            "login.html",
-            {
-                "title": "ログイン",
-                "error": error,
-                "configured_redirect_uri": settings.get("redirect_uri", ""),
-                "recommended_redirect_uri": _recommended_callback_uri(settings),
-            },
-        )
+        return serve_spa()
 
     @app.get("/auth/login", response_model=None)
     async def login(request: Request) -> Response:
@@ -1582,6 +1566,22 @@ def create_app(container: AppContainer) -> FastAPI:
             raise HTTPException(status_code=400, detail="Ranking post failed. Check ranking channel settings and bot permissions.")
         return JSONResponse({"ok": True, "message": "ランキングを手動投稿しました。"})
 
+    @app.get("/api/me")
+    async def api_me(request: Request) -> JSONResponse:
+        profile = await _require_profile(request)
+        return JSONResponse(
+            {
+                "user": {
+                    "id": str(profile.user_id),
+                    "username": profile.username,
+                    "displayName": profile.display_name,
+                    "avatarUrl": profile.avatar_url,
+                },
+                "isOwner": bool(request.session.get("is_owner")),
+                "sharedGuildIds": [str(guild_id) for guild_id in request.session.get("shared_guild_ids", [])],
+            }
+        )
+
     @app.get("/api/ws-token")
     async def ws_token(request: Request) -> JSONResponse:
         profile = await _require_profile(request)
@@ -1864,5 +1864,13 @@ def create_app(container: AppContainer) -> FastAPI:
             await container.websocket_hub.disconnect(websocket)
         except Exception:
             await container.websocket_hub.disconnect(websocket)
+
+    @app.get("/{full_path:path}", response_model=None)
+    async def spa_fallback(full_path: str) -> Response:
+        if full_path.startswith(("api/", "static/", "assets/", "ws")):
+            raise HTTPException(status_code=404)
+        if not (spa_dir / "index.html").is_file():
+            raise HTTPException(status_code=404)
+        return serve_spa()
 
     return app
