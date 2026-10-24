@@ -1,3 +1,4 @@
 settings.json
 vc_sessions.db
 utils/vc_sessions.db
+.DS_Store
